@@ -57,16 +57,21 @@ def main() -> int:
     my_folder = f"islands/{me}"
     print(f"→ sharing {my_folder} …")
 
-    # What have they actually changed?
-    status = git("status", "--porcelain").stdout.splitlines()
-    mine = [line for line in status if line[3:].startswith(my_folder)]
-    others = [line for line in status if not line[3:].startswith(my_folder)]
+    # What have they actually changed? Porcelain lines are a two-column status
+    # field, a space, then the path — and renames are "old -> new".
+    def path_of(line: str) -> str:
+        path = line[2:].lstrip()
+        return path.split(" -> ")[-1].strip('"')
+
+    status = [line for line in git("status", "--porcelain").stdout.splitlines() if line.strip()]
+    mine = [line for line in status if path_of(line).startswith(my_folder)]
+    others = [line for line in status if not path_of(line).startswith(my_folder)]
 
     if others:
         # Not an error — just don't publish it. Only their island goes out.
         print("  (leaving these alone, they're not part of your island:)")
         for line in others[:8]:
-            print(f"    {line[3:]}")
+            print(f"    {path_of(line)}")
 
     if not mine:
         print(f"\n✅ Nothing new to share — {my_folder} hasn't changed since last time.")

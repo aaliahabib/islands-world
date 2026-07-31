@@ -29,11 +29,14 @@ def main() -> int:
     if not (REPO_ROOT / ".git").exists():
         raise SystemExit("✗ this folder isn't a git repo — ask your teacher for help.")
 
-    dirty = git("status", "--porcelain").stdout.strip()
+    # Don't strip() the whole blob: porcelain lines start with a two-column
+    # status field that is often " M", and stripping eats it — which silently
+    # chops the first character off the filename.
+    dirty = [line for line in git("status", "--porcelain").stdout.splitlines() if line.strip()]
     if dirty:
         print("✋ You have changes that haven't been shared yet:\n")
-        for line in dirty.splitlines()[:10]:
-            print(f"    {line[3:]}")
+        for line in dirty[:10]:
+            print(f"    {line[2:].lstrip()}")
         print(
             "\n   Say 'share my island' first so your work is safe,\n"
             "   then say 'update' again."
