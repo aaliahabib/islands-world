@@ -205,7 +205,15 @@ def smoke_check(python: Path, student: str) -> bool:
         "print('pygame', pygame.version.ver);"
         "print('sdk ok', hasattr(islands_sdk, 'submit_score'))"
     )
-    result = subprocess.run([str(python), "-c", probe], capture_output=True, text=True, cwd=REPO_ROOT)
+    result = subprocess.run(
+        [str(python), "-c", probe],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+        # Silence pygame's "Hello from the pygame community" banner so the only
+        # thing on screen is our own tick-list.
+        env={**os.environ, "PYGAME_HIDE_SUPPORT_PROMPT": "1"},
+    )
     if result.returncode != 0:
         say("  ✗ something isn't importing:")
         say("    " + (result.stderr or result.stdout).strip()[-600:])
