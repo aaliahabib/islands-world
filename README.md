@@ -71,6 +71,9 @@ node scripts/check-bridge                     # does a score really get from WAS
 to WASM in a sandboxed iframe, and waits for a score to arrive. If it passes,
 the class works.
 
+The server smoke test submits real scores, so clear the board before class with
+`rm -f core/server/data/scores.json` (or truncate the Postgres tables).
+
 ---
 
 ## Before class: one-time setup

@@ -66,3 +66,13 @@ node smoke-test.mjs            # needs the server running
 
 Checks presence, occupancy, emotes, scoring, and that a stream of malformed
 garbage is ignored rather than fatal.
+
+⚠️ The smoke test submits **real** scores (ALICE and a deliberately absurd BO),
+because that's the only honest way to test that scores persist. Wipe the board
+before class:
+
+```bash
+rm -f core/server/data/scores.json     # JSON backend
+# or, on Postgres:
+psql "$DATABASE_URL" -c 'TRUNCATE scores, island_best;'
+```
