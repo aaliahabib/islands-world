@@ -1,0 +1,98 @@
+name: Build islands and deploy
+
+# Push to main → build any island that changed → publish the whole world to
+# GitHub Pages. A broken island fails the build and nothing deploys: that is
+# the quality gate.
+#
+# The server is NOT deployed from here. It lives on Render/Railway and
+# redeploys only when core/server changes, so a student pushing their island
+# never bounces the server mid-class.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "core/server/**"
+      - "docs/**"
+      - "**/*.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never deploy two builds at once, but don't cancel one mid-flight either —
+# a cancelled deploy during class is worse than a slightly stale one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # we diff against the previous commit to find changed islands
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: python -m pip install --quiet --upgrade pip pygame-ce pygbag
+
+      # Previously-built island bundles. Restoring them is what makes
+      # "only build what changed" safe: GitHub Pages replaces the whole site,
+      # so every island's bundle has to be present in every deploy.
+      - name: Restore island bundles
+        uses: actions/cache@v4
+        with:
+          path: site/islands
+          key: island-bundles-${{ hashFiles('islands/**', 'islands_sdk/**') }}
+          restore-keys: |
+            island-bundles-
+
+      - name: Smoke-test every island
+        run: python scripts/check-island --all
+
+      - name: Build changed islands and assemble the site
+        run: python scripts/build-islands --changed --base "${{ github.event.before }}"
+
+      - name: Point the shell at the server
+        if: vars.SERVER_URL != ''
+        run: |
+          python - <<'PY'
+          import os, pathlib, json
+          url = os.environ["SERVER_URL"]
+          path = pathlib.Path("site/config.js")
+          text = path.read_text()
+          text = text.replace("serverUrl: null", f"serverUrl: {json.dumps(url)}")
+          path.write_text(text)
+          print("shell will connect to", url)
+          PY
+        env:
+          SERVER_URL: ${{ vars.SERVER_URL }}
+
+      - name: Warn if no server is configured
+        if: vars.SERVER_URL == ''
+        run: |
+          echo "::warning::No SERVER_URL repository variable set. The world will"
+          echo "::warning::render and islands will be playable, but there will be no"
+          echo "::warning::shared scoreboard or other players. Set it in"
+          echo "::warning::Settings → Secrets and variables → Actions → Variables."
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Islands World</title>
+    <link rel="stylesheet" href="./style.css" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='white'/><path d='M6 20 L12 8 L20 12 L26 22 L16 26 Z' fill='none' stroke='black' stroke-width='2'/></svg>"
+    />
+    <script src="./config.js"></script>
+  </head>
+  <body>
+    <!-- The overworld map. -->
+    <canvas id="map"></canvas>
+
+    <!-- Everything below floats over the map. -->
+    <div id="ui">
+      <header id="topbar">
+        <div id="world-name">ISLANDS WORLD</div>
+        <div id="connection" class="pill" data-state="connecting">CONNECTING…</div>
+      </header>
+
+      <section id="scoreboard" aria-label="Scoreboard">
+        <h2>SCOREBOARD</h2>
+        <ol id="scores"></ol>
+        <div id="world-total"></div>
+      </section>
+
+      <div id="prompt" hidden></div>
+
+      <footer id="bottombar">
+        <div id="help">
+          <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move
+          &nbsp;·&nbsp; <kbd>E</kbd> enter island
+          &nbsp;·&nbsp; <kbd>1</kbd>–<kbd>5</kbd> emote
+        </div>
+        <div id="emotes"></div>
+      </footer>
+    </div>
+
+    <!-- Name entry, shown once on load. -->
+    <div id="handle-gate" class="modal">
+      <form id="handle-form">
+        <h1>ISLANDS WORLD</h1>
+        <label for="handle-input">PICK A NAME</label>
+        <input
+          id="handle-input"
+          name="handle"
+          maxlength="12"
+          autocomplete="off"
+          autocapitalize="characters"
+          spellcheck="false"
+          placeholder="e.g. ALEX"
+          required
+        />
+        <button type="submit">ENTER THE WORLD</button>
+        <p class="hint">Walk up to an island and press E to play it.</p>
+      </form>
+    </div>
+
+    <!-- An island gets mounted in here. -->
+    <div id="island-stage" hidden>
+      <div id="island-frame-wrap"></div>
+      <div id="island-chrome">
+        <div id="island-title"></div>
+        <button id="island-exit" type="button">← BACK TO WORLD (ESC)</button>
+      </div>
+      <div id="island-status" hidden></div>
+    </div>
+
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>

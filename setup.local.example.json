@@ -1,0 +1,15 @@
+{
+  "_comment": [
+    "TEACHER: copy this to setup.local.json, fill it in, and ship it inside the",
+    "pre-cloned repo folder you hand each student. setup.local.json is gitignored,",
+    "so the token never lands in the repo.",
+    "",
+    "The token should be a FINE-GRAINED personal access token with Contents:",
+    "read+write on THIS ONE REPO ONLY. It is shared across the class, which is",
+    "fine for a trusted group — REVOKE IT WHEN THE COURSE ENDS.",
+    "Never use a broad or personal-account-wide token here."
+  ],
+  "repoUrl": "https://github.com/YOUR-ORG/islands-world.git",
+  "token": "github_pat_REPLACE_ME",
+  "student": null
+}

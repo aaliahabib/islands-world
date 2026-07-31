@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+"""STUDENT: publish your island so everyone can play it.
+
+    scripts/share
+    scripts/share "made the rocks purple"     # optional message
+
+Claude runs this for you when you say "share my island". It commits the files in
+YOUR island folder and pushes them to YOUR branch. It never touches anyone
+else's work, and it can't break the world.
+
+Your teacher merges your branch in, and a minute later your island is live.
+"""
+
+from __future__ import annotations
+
+import argparse
+import subprocess
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+ISLANDS_DIR = REPO_ROOT / "islands"
+
+
+def git(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=REPO_ROOT, capture_output=True, text=True)
+
+
+def student_id() -> str:
+    """Your island id. It's your branch name — scripts/setup put you there."""
+    marker = REPO_ROOT / ".student"
+    if marker.is_file():
+        name = marker.read_text(encoding="utf-8").strip()
+        if name and (ISLANDS_DIR / name).is_dir():
+            return name
+
+    branch = git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    if branch and branch not in {"main", "master", "HEAD"} and (ISLANDS_DIR / branch).is_dir():
+        return branch
+
+    raise SystemExit(
+        "🤔 I can't tell which island is yours.\n"
+        "   You should be on a branch named after your island (e.g. 'alice').\n"
+        "   Ask your teacher, or tell Claude: 'set me up'."
+    )
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Publish your island.")
+    parser.add_argument("message", nargs="?", help="optional description of what you changed")
+    args = parser.parse_args()
+
+    if not (REPO_ROOT / ".git").exists():
+        raise SystemExit("✗ this folder isn't a git repo — ask your teacher for help.")
+
+    me = student_id()
+    my_folder = f"islands/{me}"
+    print(f"→ sharing {my_folder} …")
+
+    # What have they actually changed?
+    status = git("status", "--porcelain").stdout.splitlines()
+    mine = [line for line in status if line[3:].startswith(my_folder)]
+    others = [line for line in status if not line[3:].startswith(my_folder)]
+
+    if others:
+        # Not an error — just don't publish it. Only their island goes out.
+        print("  (leaving these alone, they're not part of your island:)")
+        for line in others[:8]:
+            print(f"    {line[3:]}")
+
+    if not mine:
+        print(f"\n✅ Nothing new to share — {my_folder} hasn't changed since last time.")
+        return 0
+
+    git("add", "--", my_folder)
+
+    message = args.message.strip() if args.message else f"{me}: update island"
+    commit = git("commit", "-m", message)
+    if commit.returncode != 0 and "nothing to commit" not in commit.stdout:
+        print("😅 Couldn't save your changes:")
+        print(commit.stdout or commit.stderr)
+        return 1
+
+    push = git("push", "origin", f"HEAD:{me}")
+    if push.returncode != 0:
+        print("\n😅 Couldn't send it just now.")
+        print("   Your work IS saved on this computer — nothing is lost.")
+        print("   Try again in a few seconds: just say 'share' again.\n")
+        print(push.stderr.strip()[:400])
+        return 1
+
+    changed = len(mine)
+    print()
+    print("─" * 46)
+    print(f"Shared! ✅   ({changed} file{'s' if changed != 1 else ''})")
+    print(f"Your island '{me}' is on its way to the world.")
+    print("Ask your teacher to merge it, then go play it.")
+    print("─" * 46)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

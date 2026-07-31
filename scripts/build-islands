@@ -1,0 +1,342 @@
+#!/usr/bin/env python3
+"""Build islands to WASM and assemble the deployable site.
+
+    scripts/build-islands                     # build every island
+    scripts/build-islands alice bo            # build just these
+    scripts/build-islands --changed           # only islands changed vs origin/main (CI)
+    scripts/build-islands --skip-wasm         # shell + registry only, no pygbag
+                                              #   (fast, for working on the overworld)
+
+Output lands in ./site :
+
+    site/
+      index.html  style.css  config.js  src/     ← the overworld shell
+      registry.json                              ← generated from islands/*/island.json
+      islands/<id>/…                             ← each island's pygbag bundle
+
+Building an island means: stage its folder together with islands_sdk, hand that
+to pygbag, and copy the result out. Staging is what makes `from islands_sdk
+import submit_score` work in the browser without students having to think
+about it.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+ISLANDS_DIR = REPO_ROOT / "islands"
+SDK_DIR = REPO_ROOT / "islands_sdk"
+SHELL_DIR = REPO_ROOT / "core" / "shell"
+SITE_DIR = REPO_ROOT / "site"
+STAGING_DIR = REPO_ROOT / "build" / "staging"
+
+DEFAULT_WIDTH = 900
+DEFAULT_HEIGHT = 700
+
+IGNORE = shutil.ignore_patterns(
+    "build", "__pycache__", "*.pyc", ".DS_Store", ".git", "*.apk", "dist"
+)
+
+
+# ── Discovery ──────────────────────────────────────────────────────────────
+
+
+def is_island(path: Path) -> bool:
+    """Real islands have a main.py. Anything starting with _ is a template."""
+    return path.is_dir() and not path.name.startswith("_") and (path / "main.py").is_file()
+
+
+def all_islands() -> list[str]:
+    if not ISLANDS_DIR.is_dir():
+        return []
+    return sorted(p.name for p in ISLANDS_DIR.iterdir() if is_island(p))
+
+
+def changed_islands(base: str) -> list[str]:
+    """Island folders touched since `base`. Used by CI to build only what moved."""
+    try:
+        diff = subprocess.run(
+            ["git", "diff", "--name-only", f"{base}...HEAD"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    except subprocess.CalledProcessError:
+        print(f"! could not diff against {base} — falling back to building everything")
+        return all_islands()
+
+    names = set()
+    for line in diff.splitlines():
+        parts = line.strip().split("/")
+        if len(parts) >= 2 and parts[0] == "islands":
+            names.add(parts[1])
+
+    # A change to the SDK or the template affects every island.
+    if any(
+        line.startswith(("islands_sdk/", "islands/_template/", "scripts/build-islands"))
+        for line in diff.splitlines()
+    ):
+        print("→ shared code changed; rebuilding all islands")
+        return all_islands()
+
+    return sorted(n for n in names if is_island(ISLANDS_DIR / n))
+
+
+# ── Manifest + versioning ──────────────────────────────────────────────────
+
+
+def read_manifest(island_id: str) -> dict:
+    path = ISLANDS_DIR / island_id / "island.json"
+    data: dict = {}
+    if path.is_file():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                data = loaded
+        except json.JSONDecodeError as error:
+            print(f"! {island_id}/island.json is not valid JSON ({error}) — using defaults")
+
+    return {
+        "name": str(data.get("name") or island_id.replace("-", " ").title()),
+        "author": str(data.get("author") or island_id),
+        "slot": data["slot"] if isinstance(data.get("slot"), int) else None,
+        "blurb": str(data.get("blurb") or ""),
+        "thumbnail": data.get("thumbnail"),
+        "width": data.get("width") if isinstance(data.get("width"), int) else DEFAULT_WIDTH,
+        "height": data.get("height") if isinstance(data.get("height"), int) else DEFAULT_HEIGHT,
+    }
+
+
+def content_version(island_id: str) -> str:
+    """A short hash of the island's source, used to cache-bust the iframe."""
+    digest = hashlib.sha256()
+    island_dir = ISLANDS_DIR / island_id
+    for path in sorted(island_dir.rglob("*")):
+        if not path.is_file():
+            continue
+        if any(part in {"build", "__pycache__", "dist"} for part in path.parts):
+            continue
+        digest.update(str(path.relative_to(island_dir)).encode())
+        digest.update(path.read_bytes())
+    # The SDK is bundled into every island, so it belongs in the version too.
+    for path in sorted(SDK_DIR.rglob("*.py")):
+        digest.update(path.read_bytes())
+    return digest.hexdigest()[:10]
+
+
+def assign_slots(entries: list[dict]) -> None:
+    """Every island needs a distinct map slot. Honour the ones in island.json,
+    fill the gaps with whatever is free."""
+    taken = {e["slot"] for e in entries if e["slot"] is not None}
+    nxt = 0
+    for entry in entries:
+        if entry["slot"] is None:
+            while nxt in taken:
+                nxt += 1
+            entry["slot"] = nxt
+            taken.add(nxt)
+
+
+# ── Building ───────────────────────────────────────────────────────────────
+
+
+def stage(island_id: str) -> Path:
+    """Copy the island + the SDK into a clean folder for pygbag to chew on."""
+    staging = STAGING_DIR / island_id
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(ISLANDS_DIR / island_id, staging, ignore=IGNORE)
+    shutil.copytree(SDK_DIR, staging / "islands_sdk", ignore=IGNORE)
+    return staging
+
+
+def build_wasm(island_id: str, manifest: dict) -> Path | None:
+    staging = stage(island_id)
+    command = [
+        sys.executable,
+        "-m",
+        "pygbag",
+        "--build",
+        "--ume_block",
+        "0",          # no "click to start" gate — the world already gated entry
+        "--can_close",
+        "1",
+        "--title",
+        manifest["name"][:40],
+        "--app_name",
+        island_id,
+        "--width",
+        str(manifest["width"]),
+        "--height",
+        str(manifest["height"]),
+        str(staging),
+    ]
+
+    print(f"  · pygbag {island_id} …", flush=True)
+    result = subprocess.run(command, cwd=REPO_ROOT, capture_output=True, text=True)
+
+    web = staging / "build" / "web"
+    if result.returncode != 0 or not (web / "index.html").is_file():
+        print(f"  ✗ {island_id}: pygbag build failed")
+        for line in (result.stderr or result.stdout).strip().splitlines()[-25:]:
+            print(f"      {line}")
+        return None
+
+    # pygbag's template paints the page behind the canvas mid-grey, which reads
+    # as a border around a black game. Make it black so the letterboxing
+    # disappears into the game.
+    index = web / "index.html"
+    try:
+        index.write_text(
+            index.read_text(encoding="utf-8").replace("#7f7f7f", "#000000"), encoding="utf-8"
+        )
+    except OSError as error:
+        print(f"  ! could not restyle {island_id}'s page background ({error})")
+
+    print(f"  ✓ {island_id}")
+    return web
+
+
+# ── Site assembly ──────────────────────────────────────────────────────────
+
+
+def copy_shell() -> None:
+    SITE_DIR.mkdir(parents=True, exist_ok=True)
+    for item in SHELL_DIR.iterdir():
+        if item.name in {".DS_Store"}:
+            continue
+        target = SITE_DIR / item.name
+        if item.is_dir():
+            if target.exists():
+                shutil.rmtree(target)
+            shutil.copytree(item, target, ignore=IGNORE)
+        else:
+            shutil.copy2(item, target)
+
+
+def write_registry(entries: list[dict]) -> None:
+    payload = json.dumps(entries, indent=2) + "\n"
+    (SITE_DIR / "registry.json").write_text(payload, encoding="utf-8")
+    # A copy at the repo root is handy when debugging; it is gitignored.
+    (REPO_ROOT / "registry.json").write_text(payload, encoding="utf-8")
+
+
+# ── Main ───────────────────────────────────────────────────────────────────
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Build islands and assemble the site.")
+    parser.add_argument("islands", nargs="*", help="island ids to build (default: all)")
+    parser.add_argument("--changed", action="store_true", help="only islands changed vs --base")
+    parser.add_argument("--base", default="origin/main", help="git ref for --changed")
+    parser.add_argument(
+        "--skip-wasm",
+        action="store_true",
+        help="assemble the shell and registry without running pygbag",
+    )
+    parser.add_argument("--clean", action="store_true", help="wipe ./site first")
+    args = parser.parse_args()
+
+    if args.clean and SITE_DIR.exists():
+        shutil.rmtree(SITE_DIR)
+
+    everything = all_islands()
+    if not everything:
+        print("! no islands found in islands/ — run scripts/add-island <name> to make one")
+
+    if args.islands:
+        targets = [i for i in args.islands if i in everything]
+        missing = sorted(set(args.islands) - set(targets))
+        if missing:
+            print(f"! unknown island(s): {', '.join(missing)}")
+            return 1
+    elif args.changed:
+        targets = changed_islands(args.base)
+        print(f"→ changed islands: {', '.join(targets) or '(none)'}")
+        # Self-healing: CI restores previously-built bundles from a cache, so
+        # anything without a bundle on disk has to be built too. Without this a
+        # cold cache would publish a site with no playable islands.
+        missing = [
+            island_id
+            for island_id in everything
+            if island_id not in targets
+            and not (SITE_DIR / "islands" / island_id / "index.html").is_file()
+        ]
+        if missing:
+            print(f"→ no existing bundle for: {', '.join(missing)} — building those too")
+            targets = sorted(set(targets) | set(missing))
+    else:
+        targets = everything
+
+    # ── Registry covers every island, not just the ones we rebuild, so a
+    #    partial build never drops islands off the map.
+    entries = []
+    for island_id in everything:
+        manifest = read_manifest(island_id)
+        entries.append(
+            {
+                "id": island_id,
+                "name": manifest["name"],
+                "author": manifest["author"],
+                "slot": manifest["slot"],
+                "blurb": manifest["blurb"],
+                "thumbnail": manifest["thumbnail"],
+                "bundleUrl": f"islands/{island_id}/index.html",
+                "version": content_version(island_id),
+                # The shell letterboxes the iframe to this ratio so the game
+                # isn't cropped — screen-wrap has to happen where you can see it.
+                "width": manifest["width"],
+                "height": manifest["height"],
+            }
+        )
+    assign_slots(entries)
+    entries.sort(key=lambda e: e["slot"])
+
+    copy_shell()
+    write_registry(entries)
+    print(f"→ site assembled at {SITE_DIR.relative_to(REPO_ROOT)}/ ({len(entries)} island(s) in registry)")
+
+    if args.skip_wasm:
+        print("→ --skip-wasm: no island bundles built")
+        return 0
+
+    if not targets:
+        print("→ nothing to build")
+        return 0
+
+    print(f"building {len(targets)} island(s)…")
+    failures = []
+    for island_id in targets:
+        manifest = read_manifest(island_id)
+        web = build_wasm(island_id, manifest)
+        if web is None:
+            failures.append(island_id)
+            continue
+        destination = SITE_DIR / "islands" / island_id
+        if destination.exists():
+            shutil.rmtree(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(web, destination)
+
+    if failures:
+        # This is the quality gate: a broken island must not reach the world.
+        print(f"\n✗ {len(failures)} island(s) failed to build: {', '.join(failures)}")
+        return 1
+
+    print("\nbuild complete ✅")
+    return 0
+
+
+if __name__ == "__main__":
+    os.chdir(REPO_ROOT)
+    sys.exit(main())

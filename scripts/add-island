@@ -1,0 +1,239 @@
+#!/usr/bin/env python3
+"""TEACHER: create a student's island and put it in the world.
+
+    scripts/add-island alice
+    scripts/add-island alice "Alice's Asteroids"
+    scripts/add-island alice --local          # scaffold only, don't touch git
+    scripts/add-island alice --force          # re-scaffold over an existing island
+
+What it does:
+  1. checks the id is a safe slug, the island doesn't already exist, and your
+     working tree is clean and on an up-to-date main
+  2. copies islands/_template → islands/<id>
+  3. writes islands/<id>/island.json with the display name, author and the next
+     free map slot
+  4. commits and pushes to main, which triggers the deploy — the island goes
+     live as the template until the student customises it
+  5. creates and pushes the student's branch <id>, which is the workspace they
+     will check out
+
+Pre-class, loop it over your roster:
+
+    for kid in alice bo cai dee; do scripts/add-island $kid; done
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+ISLANDS_DIR = REPO_ROOT / "islands"
+TEMPLATE_DIR = ISLANDS_DIR / "_template"
+
+SLUG = re.compile(r"^[a-z][a-z0-9-]{0,23}$")
+
+IGNORE = shutil.ignore_patterns("build", "__pycache__", "*.pyc", ".DS_Store", "dist")
+
+
+# ── git helpers ────────────────────────────────────────────────────────────
+
+
+def git(*args: str, check: bool = True) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", *args], cwd=REPO_ROOT, capture_output=True, text=True, check=check
+    )
+
+
+def in_git_repo() -> bool:
+    return (REPO_ROOT / ".git").exists()
+
+
+def has_remote() -> bool:
+    try:
+        return bool(git("remote").stdout.strip())
+    except subprocess.CalledProcessError:
+        return False
+
+
+def current_branch() -> str:
+    return git("rev-parse", "--abbrev-ref", "HEAD", check=False).stdout.strip()
+
+
+def tree_is_clean() -> bool:
+    return not git("status", "--porcelain", check=False).stdout.strip()
+
+
+# ── scaffolding ────────────────────────────────────────────────────────────
+
+
+def next_free_slot(exclude: str) -> int:
+    taken = set()
+    for path in ISLANDS_DIR.glob("*/island.json"):
+        if path.parent.name.startswith("_") or path.parent.name == exclude:
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if isinstance(data.get("slot"), int):
+            taken.add(data["slot"])
+    slot = 0
+    while slot in taken:
+        slot += 1
+    return slot
+
+
+def scaffold(island_id: str, display_name: str, force: bool) -> Path:
+    target = ISLANDS_DIR / island_id
+    if target.exists():
+        if not force:
+            raise SystemExit(
+                f"✗ islands/{island_id} already exists. Use --force to re-scaffold it "
+                f"(this overwrites whatever is there)."
+            )
+        print(f"  removing existing islands/{island_id} (--force)")
+        shutil.rmtree(target)
+
+    # Work out the slot BEFORE copying the template in, or we'd see the
+    # template's own slot sitting in the new folder and skip past it.
+    slot = next_free_slot(exclude=island_id)
+
+    shutil.copytree(TEMPLATE_DIR, target, ignore=IGNORE)
+
+    manifest = {
+        "name": display_name,
+        "author": island_id,
+        "slot": slot,
+        "blurb": f"{display_name} — a brand new asteroids game.",
+        "thumbnail": None,
+    }
+    (target / "island.json").write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    return target
+
+
+# ── main ───────────────────────────────────────────────────────────────────
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Scaffold and deploy a student's island.")
+    parser.add_argument("island_id", help="student id — lowercase, no spaces (e.g. alice)")
+    parser.add_argument("display_name", nargs="?", help='display name (e.g. "Alice\'s Asteroids")')
+    parser.add_argument("--force", action="store_true", help="overwrite an existing island")
+    parser.add_argument("--local", action="store_true", help="scaffold only; no git at all")
+    args = parser.parse_args()
+
+    island_id = args.island_id.strip().lower()
+    if not SLUG.match(island_id):
+        raise SystemExit(
+            f"✗ '{args.island_id}' is not a valid island id.\n"
+            f"  Use lowercase letters, digits and dashes, starting with a letter — e.g. alice, bo-2"
+        )
+    if island_id.startswith("_"):
+        raise SystemExit("✗ ids starting with _ are reserved for templates")
+    if not TEMPLATE_DIR.is_dir():
+        raise SystemExit(f"✗ no template at {TEMPLATE_DIR} — is this the repo root?")
+
+    display_name = (args.display_name or f"{island_id.replace('-', ' ').title()}'s Island").strip()
+
+    use_git = not args.local and in_git_repo()
+    can_deploy = use_git and has_remote()
+
+    # ── 1. validate the repo state before touching anything
+    if use_git:
+        if not tree_is_clean():
+            raise SystemExit(
+                "✗ your working tree has uncommitted changes.\n"
+                "  Commit or stash them first — add-island commits and pushes for you."
+            )
+        branch = current_branch()
+        if branch != "main":
+            raise SystemExit(f"✗ you are on '{branch}', not 'main'. Run: git checkout main")
+        if can_deploy:
+            print("→ pulling latest main…")
+            pull = git("pull", "--ff-only", check=False)
+            if pull.returncode != 0:
+                raise SystemExit(f"✗ git pull failed:\n{pull.stderr.strip()}")
+
+    # ── 2 + 3. scaffold and write the manifest
+    print(f"→ creating islands/{island_id} …")
+    target = scaffold(island_id, display_name, args.force)
+    manifest = json.loads((target / "island.json").read_text(encoding="utf-8"))
+    print(f"  name: {manifest['name']}")
+    print(f"  slot: {manifest['slot']}")
+
+    if not use_git:
+        print(f"\n✅ scaffolded islands/{island_id} (no git — --local or not a repo)")
+        return 0
+
+    # ── 4. commit + push to main → CI builds and publishes
+    git("add", "--", f"islands/{island_id}")
+    commit = git("commit", "-m", f"add island: {island_id}", check=False)
+    if commit.returncode != 0 and "nothing to commit" not in commit.stdout:
+        raise SystemExit(f"✗ commit failed:\n{commit.stdout}{commit.stderr}")
+    print(f"→ committed 'add island: {island_id}'")
+
+    if not can_deploy:
+        print(
+            f"\n⚠️  No git remote is configured, so nothing was pushed.\n"
+            f"   The island exists locally and is committed.\n"
+            f"   Connect the remote (see 'One-time setup' in README.md) and re-run\n"
+            f"   this script, or just push main yourself, to deploy it.\n"
+        )
+        _make_branch(island_id, push=False)
+        _report(island_id, target, pushed=False)
+        return 0
+
+    push = git("push", "origin", "main", check=False)
+    if push.returncode != 0:
+        raise SystemExit(
+            f"✗ push failed:\n{push.stderr.strip()}\n"
+            f"  The island is committed locally — fix the remote and `git push origin main`."
+        )
+    print("→ pushed to main (GitHub Actions will build and publish it)")
+
+    # ── 5. the student's branch
+    _make_branch(island_id, push=True)
+    _report(island_id, target, pushed=True)
+    return 0
+
+
+def _make_branch(island_id: str, push: bool) -> None:
+    existing = git("branch", "--list", island_id, check=False).stdout.strip()
+    if existing:
+        print(f"→ branch '{island_id}' already exists, leaving it alone")
+    else:
+        git("branch", island_id, "main")
+        print(f"→ created branch '{island_id}'")
+
+    if push:
+        result = git("push", "-u", "origin", island_id, check=False)
+        if result.returncode != 0:
+            print(f"⚠️  could not push branch '{island_id}':\n   {result.stderr.strip()}")
+        else:
+            print(f"→ pushed branch '{island_id}'")
+
+
+def _report(island_id: str, target: Path, pushed: bool) -> None:
+    print()
+    print("─" * 58)
+    print(f"✅ island ready: {island_id}")
+    print(f"   folder : {target.relative_to(REPO_ROOT)}")
+    print(f"   branch : {island_id}")
+    print(f"   student edits: islands/{island_id}/main.py")
+    if pushed:
+        print("   status : pushed — it will appear in the world once Actions finishes")
+    else:
+        print("   status : local only — not deployed yet")
+    print("─" * 58)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

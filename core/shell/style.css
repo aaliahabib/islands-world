@@ -1,0 +1,503 @@
+/* The overworld is the inverse of the island games: white paper, black ink. */
+
+:root {
+  --ink: #000;
+  --paper: #fff;
+  --faint: #c9c9c9;
+  --mid: #8a8a8a;
+  --ui-font: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--ui-font);
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+}
+
+#map {
+  display: block;
+  width: 100vw;
+  height: 100vh;
+  touch-action: none;
+}
+
+/* ── Overlay UI ─────────────────────────────────────────────────────────── */
+
+#ui {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: clamp(12px, 2vw, 24px);
+}
+
+#ui > * {
+  pointer-events: none;
+}
+
+#topbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+#world-name {
+  font-size: clamp(11px, 1.4vw, 14px);
+  letter-spacing: 0.28em;
+  font-weight: 700;
+}
+
+.pill {
+  border: 2px solid var(--ink);
+  padding: 4px 10px;
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  white-space: nowrap;
+}
+
+.pill[data-state="connecting"] {
+  border-color: var(--mid);
+  color: var(--mid);
+}
+
+.pill[data-state="offline"] {
+  border-style: dashed;
+  border-color: var(--mid);
+  color: var(--mid);
+}
+
+.pill[data-state="online"] {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+/* ── Scoreboard ─────────────────────────────────────────────────────────── */
+
+#scoreboard {
+  position: fixed;
+  top: clamp(52px, 7vh, 76px);
+  right: clamp(12px, 2vw, 24px);
+  width: 224px;
+  border: 2px solid var(--ink);
+  background: var(--paper);
+  padding: 10px 12px 12px;
+  pointer-events: none;
+}
+
+#scoreboard h2 {
+  margin: 0 0 8px;
+  font-size: 10px;
+  letter-spacing: 0.24em;
+  font-weight: 700;
+  border-bottom: 1px solid var(--faint);
+  padding-bottom: 6px;
+}
+
+#scores {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 12px;
+  display: grid;
+  gap: 3px;
+  max-height: 42vh;
+  overflow: hidden;
+}
+
+#scores li {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  letter-spacing: 0.06em;
+}
+
+#scores li.me {
+  font-weight: 700;
+}
+
+#scores li.me .who::before {
+  content: "▸ ";
+}
+
+#scores .who {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#scores .num {
+  font-variant-numeric: tabular-nums;
+}
+
+#scores .empty {
+  color: var(--mid);
+  justify-content: flex-start;
+}
+
+#world-total {
+  margin-top: 9px;
+  padding-top: 7px;
+  border-top: 1px solid var(--faint);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  display: flex;
+  justify-content: space-between;
+  color: var(--mid);
+}
+
+/* ── Enter-island prompt ────────────────────────────────────────────────── */
+
+#prompt {
+  position: fixed;
+  left: 50%;
+  bottom: clamp(96px, 16vh, 150px);
+  transform: translateX(-50%);
+  border: 2px solid var(--ink);
+  background: var(--paper);
+  padding: 8px 16px;
+  font-size: 13px;
+  letter-spacing: 0.16em;
+  white-space: nowrap;
+  animation: nudge 1.4s ease-in-out infinite;
+}
+
+@keyframes nudge {
+  0%,
+  100% {
+    transform: translate(-50%, 0);
+  }
+  50% {
+    transform: translate(-50%, -4px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #prompt {
+    animation: none;
+  }
+}
+
+/* ── Bottom bar ─────────────────────────────────────────────────────────── */
+
+#bottombar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+#help {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--mid);
+}
+
+kbd {
+  border: 1px solid var(--mid);
+  border-radius: 2px;
+  padding: 1px 5px;
+  font: inherit;
+  font-size: 10px;
+  color: var(--ink);
+}
+
+#emotes {
+  display: flex;
+  gap: 6px;
+  pointer-events: auto;
+}
+
+#emotes button {
+  pointer-events: auto;
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  line-height: 1;
+  min-width: 44px;
+  height: 38px;
+  border: 2px solid var(--ink);
+  background: var(--paper);
+  color: var(--ink);
+  cursor: pointer;
+  padding: 0 10px;
+}
+
+#emotes button:hover,
+#emotes button:focus-visible {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+#emotes button:active {
+  transform: translateY(1px);
+}
+
+/* ── Name gate ──────────────────────────────────────────────────────────── */
+
+.modal {
+  position: fixed;
+  inset: 0;
+  background: var(--paper);
+  display: grid;
+  place-items: center;
+  z-index: 40;
+}
+
+.modal[hidden] {
+  display: none;
+}
+
+#handle-form {
+  display: grid;
+  gap: 14px;
+  justify-items: center;
+  text-align: center;
+  border: 2px solid var(--ink);
+  padding: 36px 44px;
+  max-width: min(90vw, 420px);
+}
+
+#handle-form h1 {
+  margin: 0;
+  font-size: clamp(20px, 4vw, 30px);
+  letter-spacing: 0.3em;
+  font-weight: 700;
+}
+
+#handle-form label {
+  font-size: 10px;
+  letter-spacing: 0.28em;
+  color: var(--mid);
+}
+
+#handle-input {
+  font: inherit;
+  font-size: 20px;
+  letter-spacing: 0.2em;
+  text-align: center;
+  text-transform: uppercase;
+  border: none;
+  border-bottom: 2px solid var(--ink);
+  background: transparent;
+  color: var(--ink);
+  padding: 6px 4px;
+  width: 100%;
+  border-radius: 0;
+}
+
+#handle-input:focus {
+  outline: none;
+  border-bottom-width: 3px;
+}
+
+#handle-form button {
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: 0.2em;
+  border: 2px solid var(--ink);
+  background: var(--paper);
+  color: var(--ink);
+  padding: 10px 20px;
+  cursor: pointer;
+}
+
+#handle-form button:hover,
+#handle-form button:focus-visible {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+.hint {
+  margin: 0;
+  font-size: 11px;
+  color: var(--mid);
+  letter-spacing: 0.06em;
+}
+
+/* ── Island stage ───────────────────────────────────────────────────────── */
+
+#island-stage {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: #000; /* islands are black-backgrounded games */
+  display: grid;
+  grid-template-rows: 1fr auto;
+}
+
+#island-stage[hidden] {
+  display: none;
+}
+
+#island-frame-wrap {
+  position: relative;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+}
+
+/* Fills the stage by default; JS then letterboxes it to the island's own
+   aspect ratio so nothing gets cropped. The 100% fallback matters — an iframe
+   with no size collapses to 300x150 and pygbag never finishes booting. */
+#island-frame-wrap iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  border: 0;
+  background: #000;
+}
+
+#island-chrome {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 14px;
+  background: #000;
+  border-top: 2px solid #fff;
+  color: #fff;
+}
+
+#island-title {
+  font-size: 12px;
+  letter-spacing: 0.2em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#island-exit {
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  border: 2px solid #fff;
+  background: #000;
+  color: #fff;
+  padding: 7px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+#island-exit:hover,
+#island-exit:focus-visible {
+  background: #fff;
+  color: #000;
+}
+
+/* Loading / game-over / broken overlay, drawn in the island's own palette. */
+#island-status {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.88);
+  color: #fff;
+  text-align: center;
+  padding: 24px;
+}
+
+#island-status[hidden] {
+  display: none;
+}
+
+#island-status .box {
+  display: grid;
+  gap: 14px;
+  justify-items: center;
+  border: 2px solid #fff;
+  padding: 28px 34px;
+  max-width: min(90vw, 460px);
+}
+
+#island-status .headline {
+  font-size: clamp(18px, 3.4vw, 26px);
+  letter-spacing: 0.26em;
+}
+
+#island-status .detail {
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  color: #bbb;
+  line-height: 1.7;
+}
+
+#island-status .final {
+  font-size: clamp(30px, 7vw, 52px);
+  letter-spacing: 0.12em;
+  font-variant-numeric: tabular-nums;
+}
+
+#island-status .actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+#island-status button {
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  border: 2px solid #fff;
+  background: #000;
+  color: #fff;
+  padding: 10px 16px;
+  cursor: pointer;
+}
+
+#island-status button:hover,
+#island-status button:focus-visible {
+  background: #fff;
+  color: #000;
+}
+
+#island-status .spinner {
+  width: 34px;
+  height: 34px;
+  border: 2px solid #444;
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #island-status .spinner {
+    animation-duration: 3s;
+  }
+}
+
+/* ── Small screens ──────────────────────────────────────────────────────── */
+
+@media (max-width: 720px) {
+  #scoreboard {
+    width: 168px;
+    font-size: 11px;
+  }
+
+  #help {
+    display: none;
+  }
+}

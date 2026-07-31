@@ -1,0 +1,27 @@
+# Local build output — the site is assembled by scripts/build-islands / CI.
+/site/
+/registry.json
+build/
+*.apk
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Node
+node_modules/
+
+# Local student config written by scripts/setup (may contain a push token)
+/setup.local.json
+/.student
+/core/shell/config.local.js
+
+# Server local data
+/core/server/data/
+
+# OS
+.DS_Store
+Thumbs.db

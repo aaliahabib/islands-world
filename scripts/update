@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+"""STUDENT: get the latest version of the world.
+
+    scripts/update
+
+Claude runs this when you say "update". It pulls in everyone else's islands and
+any fixes to the template.
+
+It will refuse to run if you have unshared work, so you can't lose anything —
+say "share my island" first, then "update".
+
+You will rarely need this. Sharing is the thing you do all class.
+"""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def git(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=REPO_ROOT, capture_output=True, text=True)
+
+
+def main() -> int:
+    if not (REPO_ROOT / ".git").exists():
+        raise SystemExit("✗ this folder isn't a git repo — ask your teacher for help.")
+
+    dirty = git("status", "--porcelain").stdout.strip()
+    if dirty:
+        print("✋ You have changes that haven't been shared yet:\n")
+        for line in dirty.splitlines()[:10]:
+            print(f"    {line[3:]}")
+        print(
+            "\n   Say 'share my island' first so your work is safe,\n"
+            "   then say 'update' again."
+        )
+        return 1
+
+    print("→ fetching the latest world…")
+    fetch = git("fetch", "origin")
+    if fetch.returncode != 0:
+        print("😅 Couldn't reach the server. Check the wifi and try again.")
+        print(fetch.stderr.strip()[:300])
+        return 1
+
+    before = git("rev-parse", "HEAD").stdout.strip()
+    reset = git("reset", "--hard", "origin/main")
+    if reset.returncode != 0:
+        print("😅 Couldn't update. Ask your teacher.")
+        print(reset.stderr.strip()[:300])
+        return 1
+    after = git("rev-parse", "HEAD").stdout.strip()
+
+    if before == after:
+        print("\n✅ Already up to date — you have the latest world.")
+    else:
+        count = git("rev-list", "--count", f"{before}..{after}").stdout.strip() or "some"
+        print(f"\n✅ Updated! ({count} new change(s) from the rest of the class.)")
+        print("   Run your game again to make sure it still works.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

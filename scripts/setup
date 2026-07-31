@@ -1,0 +1,266 @@
+#!/usr/bin/env python3
+"""STUDENT: get this machine ready to build your island.
+
+    python scripts/setup                 # figures out who you are from the branch
+    python scripts/setup --student alice
+
+Claude runs this when you say "set me up". It is safe to run again if something
+goes wrong.
+
+What it does:
+  1. puts you on your island's branch
+  2. points git at the class repo with a push key baked in, so sharing just works
+  3. makes a virtualenv and installs pygame
+  4. makes `from islands_sdk import ...` work
+  5. checks it all imports, and tells you which file to open
+
+Written in Python (not bash) because it has to run on Macs and Windows.
+
+TEACHER: the repo URL and push token come from setup.local.json — copy
+setup.local.example.json, fill it in, and hand it out with the repo folder.
+It is gitignored, so the token never ends up in the repo.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import platform
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+ISLANDS_DIR = REPO_ROOT / "islands"
+CONFIG_FILE = REPO_ROOT / "setup.local.json"
+VENV_DIR = REPO_ROOT / ".venv"
+
+IS_WINDOWS = platform.system() == "Windows"
+
+
+def say(message: str) -> None:
+    print(message, flush=True)
+
+
+def git(*args: str, check: bool = False) -> subprocess.CompletedProcess:
+    result = subprocess.run(["git", *args], cwd=REPO_ROOT, capture_output=True, text=True)
+    if check and result.returncode != 0:
+        raise SystemExit(f"✗ git {' '.join(args)} failed:\n{result.stderr.strip()}")
+    return result
+
+
+def load_config() -> dict:
+    if CONFIG_FILE.is_file():
+        try:
+            data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+        except json.JSONDecodeError as error:
+            say(f"! {CONFIG_FILE.name} is not valid JSON ({error}) — ignoring it")
+    return {}
+
+
+# ── 1. who are you ─────────────────────────────────────────────────────────
+
+
+def resolve_student(explicit: str | None, config: dict) -> str:
+    candidates = [
+        explicit,
+        os.environ.get("ISLANDS_STUDENT"),
+        config.get("student"),
+        (REPO_ROOT / ".student").read_text(encoding="utf-8").strip()
+        if (REPO_ROOT / ".student").is_file()
+        else None,
+        git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip(),
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        name = candidate.strip().lower()
+        if name in {"main", "master", "head", ""}:
+            continue
+        return name
+
+    raise SystemExit(
+        "✗ I don't know whose island this is.\n"
+        "  Run:  python scripts/setup --student <your-name>\n"
+        "  (your teacher will tell you the name)"
+    )
+
+
+# ── 2. git ─────────────────────────────────────────────────────────────────
+
+
+def configure_git(student: str, config: dict) -> None:
+    if not (REPO_ROOT / ".git").exists():
+        say("  ! this folder isn't a git repo — skipping the git steps")
+        return
+
+    # Identity, so commits don't fail with "please tell me who you are".
+    if not git("config", "user.name").stdout.strip():
+        git("config", "user.name", student)
+    if not git("config", "user.email").stdout.strip():
+        git("config", "user.email", f"{student}@islands.local")
+
+    # Push remote with the class token baked in.
+    remote_url = config.get("repoUrl") or os.environ.get("ISLANDS_REPO_URL")
+    token = config.get("token") or os.environ.get("ISLANDS_TOKEN")
+    if remote_url and token and "x-access-token" not in remote_url:
+        remote_url = re.sub(r"^https://", f"https://x-access-token:{token}@", remote_url)
+    if remote_url:
+        existing = git("remote").stdout.split()
+        if "origin" in existing:
+            git("remote", "set-url", "origin", remote_url)
+        else:
+            git("remote", "add", "origin", remote_url)
+        say("  ✓ push access configured")
+    elif not git("remote").stdout.strip():
+        say("  ! no git remote configured — sharing won't work until your teacher sets one")
+
+    # Get onto their branch.
+    fetch = git("fetch", "origin")
+    if fetch.returncode != 0:
+        say("  ! couldn't reach the server — carrying on with what's on this machine")
+
+    current = git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    if current == student:
+        say(f"  ✓ already on branch '{student}'")
+        return
+
+    if git("rev-parse", "--verify", f"refs/heads/{student}").returncode == 0:
+        git("checkout", student, check=True)
+    elif git("rev-parse", "--verify", f"refs/remotes/origin/{student}").returncode == 0:
+        git("checkout", "-b", student, f"origin/{student}", check=True)
+    else:
+        say(f"  ! no branch '{student}' yet — staying on '{current}'")
+        say("    (ask your teacher to run: scripts/add-island " + student + ")")
+        return
+    say(f"  ✓ on branch '{student}'")
+
+
+# ── 3. python environment ──────────────────────────────────────────────────
+
+
+def venv_python() -> Path:
+    return VENV_DIR / ("Scripts" if IS_WINDOWS else "bin") / ("python.exe" if IS_WINDOWS else "python")
+
+
+def make_venv() -> Path:
+    python = venv_python()
+    if not python.is_file():
+        say("  · creating a virtualenv (this takes a moment)…")
+        result = subprocess.run([sys.executable, "-m", "venv", str(VENV_DIR)], capture_output=True, text=True)
+        if result.returncode != 0:
+            raise SystemExit(f"✗ couldn't create a virtualenv:\n{result.stderr.strip()}")
+    say(f"  ✓ virtualenv at {VENV_DIR.name}/")
+    return python
+
+
+def install_pygame(python: Path) -> None:
+    check = subprocess.run([str(python), "-c", "import pygame"], capture_output=True)
+    if check.returncode == 0:
+        say("  ✓ pygame already installed")
+        return
+    say("  · installing pygame (this is the slow bit)…")
+    result = subprocess.run(
+        [str(python), "-m", "pip", "install", "--quiet", "--upgrade", "pygame-ce"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise SystemExit(
+            "✗ couldn't install pygame:\n"
+            + (result.stderr or result.stdout).strip()[-1200:]
+            + "\n\nAsk your teacher — this is usually a network or permissions thing."
+        )
+    say("  ✓ pygame installed")
+
+
+def link_sdk(python: Path) -> None:
+    """Put the repo root on the venv's path so `import islands_sdk` works."""
+    result = subprocess.run(
+        [str(python), "-c", "import sysconfig;print(sysconfig.get_paths()['purelib'])"],
+        capture_output=True,
+        text=True,
+    )
+    site_packages = Path(result.stdout.strip())
+    if not site_packages.is_dir():
+        say("  ! couldn't find site-packages — you may need to set PYTHONPATH by hand")
+        return
+    (site_packages / "islands_world.pth").write_text(str(REPO_ROOT) + "\n", encoding="utf-8")
+    say("  ✓ islands_sdk is importable")
+
+
+# ── 5. smoke check ─────────────────────────────────────────────────────────
+
+
+def smoke_check(python: Path, student: str) -> bool:
+    island_main = ISLANDS_DIR / student / "main.py"
+    # Import only — never open a window here. Opening a display in setup is how
+    # you turn a working machine into a mysterious headless error.
+    probe = (
+        "import pygame, islands_sdk, sys;"
+        "print('pygame', pygame.version.ver);"
+        "print('sdk ok', hasattr(islands_sdk, 'submit_score'))"
+    )
+    result = subprocess.run([str(python), "-c", probe], capture_output=True, text=True, cwd=REPO_ROOT)
+    if result.returncode != 0:
+        say("  ✗ something isn't importing:")
+        say("    " + (result.stderr or result.stdout).strip()[-600:])
+        return False
+    for line in result.stdout.strip().splitlines():
+        say(f"  ✓ {line}")
+
+    if not island_main.is_file():
+        say(f"  ✗ can't find islands/{student}/main.py — is '{student}' the right name?")
+        return False
+    say(f"  ✓ found islands/{student}/main.py")
+    return True
+
+
+# ── main ───────────────────────────────────────────────────────────────────
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Set up a student machine.")
+    parser.add_argument("--student", help="your island id (e.g. alice)")
+    args = parser.parse_args()
+
+    config = load_config()
+    student = resolve_student(args.student, config)
+
+    say(f"\nSetting up '{student}' …\n")
+
+    say("git:")
+    configure_git(student, config)
+    (REPO_ROOT / ".student").write_text(student + "\n", encoding="utf-8")
+
+    say("\npython:")
+    python = make_venv()
+    install_pygame(python)
+    link_sdk(python)
+
+    say("\nchecking:")
+    ok = smoke_check(python, student)
+
+    interpreter = venv_python()
+    print()
+    print("─" * 58)
+    if ok:
+        print(f"✅ ready — open islands/{student}/main.py and Run it")
+        print()
+        print("   In PyCharm, set the interpreter to:")
+        print(f"     {interpreter}")
+        print()
+        print("   Then just talk to Claude:")
+        print('     "make my ship faster"      "share my island"')
+    else:
+        print("⚠️  not quite ready — see the ✗ above, then ask your teacher.")
+    print("─" * 58)
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
