@@ -1,7 +1,7 @@
 // The DOM layer floating over the map: scoreboard, connection pill, the
 // "press E" prompt, and the emote buttons.
 
-import { EMOTES } from "./config.js";
+import { EMOTES } from "./avatar.js";
 
 const CONNECTION_LABEL = {
   online: "CONNECTED",

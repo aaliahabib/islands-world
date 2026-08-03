@@ -206,7 +206,9 @@ site/             build output (gitignored)
 - **The iframe is for isolation and teardown, not multiplayer.** One student's
   code runs in everyone else's browser; removing the iframe destroys the whole
   Python runtime cleanly between islands.
-- **No accounts, no chat.** Kids pick a handle. Emotes only.
+- **No accounts, no chat.** Kids pick a handle and a stick figure (colour, head,
+  hat) at the door; it lives in their browser, not the repo. Emotes are poses the
+  figure performs — wave, jump, dance — not text.
 - **All building happens in CI.** Student machines need Python + pygame and
   nothing else — no pygbag, no Node.
 

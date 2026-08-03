@@ -1,6 +1,6 @@
 // Keyboard state for the overworld. Deliberately tiny.
 
-import { EMOTES } from "./config.js";
+import { EMOTES } from "./avatar.js";
 
 const MOVEMENT = {
   KeyW: "up",

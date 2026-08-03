@@ -39,7 +39,7 @@ Client → server:
 
 | Message | Meaning |
 |---|---|
-| `{t:"join", handle}` | announce yourself; replies with `welcome` |
+| `{t:"join", handle, avatar}` | announce yourself; replies with `welcome`. `avatar` is three small indices (colour, head, hat) for your stick figure — the server validates and relays them, and has no idea what they mean |
 | `{t:"pos", x, y, a}` | where your avatar is (~15/s) |
 | `{t:"emote", e}` | broadcast a short emote |
 | `{t:"enter", island}` / `{t:"leave"}` | island occupancy counts |
@@ -50,7 +50,7 @@ Server → client:
 | Message | Meaning |
 |---|---|
 | `{t:"welcome", id, handle, board, worldTotal}` | your id and the current board |
-| `{t:"world", players, islands}` | roster + island occupancy (~15/s) |
+| `{t:"world", players, islands}` | roster (with each player's avatar) + island occupancy (~15/s) |
 | `{t:"board", entries, worldTotal}` | scoreboard changed |
 | `{t:"emote", id, e}` | someone emoted |
 

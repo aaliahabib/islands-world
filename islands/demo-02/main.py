@@ -25,7 +25,6 @@ import random
 import pygame
 
 from islands_sdk import game_over, reset as reset_score, submit_score
-from vector_font import draw_text, text_width
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  CUSTOMIZE ME — change these numbers and colours first. Nothing here can
@@ -40,6 +39,7 @@ HEIGHT = 700
 BACKGROUND = (0, 0, 0)           # colours are (RED, GREEN, BLUE), 0–255
 LINE_COLOR = (255, 255, 255)     # everything is drawn as lines in this colour
 LINE_WIDTH = 2
+FONT_NAME = None                 # None = pygame's built-in font
 
 SHIP_SIZE = 22                   # how big the ship is
 SHIP_TURN_SPEED = 220            # degrees per second
@@ -83,6 +83,20 @@ def draw_shape(surface, points, color=None, width=None):
         points,
         width or LINE_WIDTH,
     )
+
+
+_fonts = {}
+
+
+def draw_text(surface, text, pos, size=24, color=None, align="left"):
+    """Draw some text. `align` is "left", "center" or "right", and `pos` is the
+    top corner (or top middle, if centred)."""
+    if size not in _fonts:
+        _fonts[size] = pygame.font.Font(FONT_NAME, size)
+    image = _fonts[size].render(str(text).upper(), True, color or LINE_COLOR)
+    rect = image.get_rect()
+    setattr(rect, {"left": "topleft", "center": "midtop", "right": "topright"}[align], pos)
+    surface.blit(image, rect)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -380,28 +394,26 @@ class Game:
         self.draw_hud(surface)
 
         if self.over:
-            draw_text(surface, "GAME OVER", (WIDTH / 2, HEIGHT / 2 - 60),
-                      size=54, color=LINE_COLOR, width=3, center=True)
-            draw_text(surface, f"SCORE {self.score}", (WIDTH / 2, HEIGHT / 2 + 20),
-                      size=28, color=LINE_COLOR, width=2, center=True)
-            draw_text(surface, "PRESS R TO PLAY AGAIN", (WIDTH / 2, HEIGHT / 2 + 76),
-                      size=18, color=LINE_COLOR, width=2, center=True)
+            draw_text(surface, "GAME OVER", (WIDTH / 2, HEIGHT / 2 - 70), size=64, align="center")
+            draw_text(surface, f"SCORE {self.score}", (WIDTH / 2, HEIGHT / 2 + 10),
+                      size=34, align="center")
+            draw_text(surface, "PRESS R TO PLAY AGAIN", (WIDTH / 2, HEIGHT / 2 + 60),
+                      size=24, align="center")
 
     def draw_hud(self, surface):
-        draw_text(surface, str(self.score), (28, 24), size=40, width=3)
+        draw_text(surface, str(self.score), (28, 22), size=48)
 
         # Lives, drawn as little ships.
         for i in range(self.lives):
             x = 34 + i * 30
-            y = 96
+            y = 90
             points = [
                 (x + (px * 0.0 - py * -1.0) * 11, y + (px * -1.0 + py * 0.0) * 11)
                 for px, py in Ship.SHAPE
             ]
             draw_shape(surface, points, width=2)
 
-        label = f"WAVE {self.wave}"
-        draw_text(surface, label, (WIDTH - 28 - text_width(label, 18), 28), size=18)
+        draw_text(surface, f"WAVE {self.wave}", (WIDTH - 28, 26), size=24, align="right")
 
 
 async def main():
@@ -422,8 +434,8 @@ async def main():
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_r and game.over:
                     game.start_new_game()
-                elif event.key == pygame.K_ESCAPE:
-                    running = False
+                # ESC is not handled here on purpose — in Islands World it means
+                # "leave this island", and the world itself takes care of that.
 
         game.update(dt, pygame.key.get_pressed())
         game.draw(screen)

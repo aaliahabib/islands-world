@@ -1,51 +1,38 @@
-// The overworld: a white sheet of paper with black ink islands on it.
+// The overworld: a white sheet of paper with black ink islands on it, and
+// stick figures walking between them.
 //
-// Everything is drawn as vector outlines to match the island games, just with
-// the colours reversed. Island shapes are generated deterministically from the
-// island id, so an island always looks the same for everybody.
+// Island shapes are generated deterministically from the island id, so an
+// island always looks the same for everybody.
 
 import { FAINT, INK, MID, PAPER, WORLD } from "./config.js";
-import { drawText, textWidth } from "./vecfont.js";
+import {
+  DEFAULT_AVATAR,
+  EMOTE_DURATION,
+  avatarColour,
+  drawFigure,
+  poseFor,
+  sanitizeAvatar,
+} from "./avatar.js";
 
-/**
- * Fit an island's name inside its shoreline: shrink it, and if it's still too
- * wide, break it across two lines at the most balanced space.
- */
-function fitLabel(rawName, maxWidth) {
-  const name = String(rawName).toUpperCase().slice(0, 28);
-  const fits = (lines, size) => lines.every((line) => textWidth(line, size) <= maxWidth);
+const UI_FONT = `ui-monospace, "SF Mono", Menlo, Consolas, monospace`;
 
-  // 1. One line at a comfortable size, if it fits.
-  for (let size = 26; size >= 18; size -= 1) {
-    if (fits([name], size)) return { lines: [name], size };
-  }
+/** All overworld text goes through here, so it's consistent and easy to change. */
+function label(ctx, text, x, y, size, { align = "center", color = INK, bold = false } = {}) {
+  ctx.save();
+  ctx.font = `${bold ? "700 " : ""}${size}px ${UI_FONT}`;
+  ctx.textAlign = align;
+  ctx.textBaseline = "top";
+  ctx.fillStyle = color;
+  ctx.fillText(String(text).toUpperCase(), x, y);
+  ctx.restore();
+}
 
-  // 2. Otherwise break it in two rather than shrink it into illegibility.
-  const words = name.split(/\s+/).filter(Boolean);
-  if (words.length > 1) {
-    let bestSplit = 1;
-    let bestDelta = Infinity;
-    for (let i = 1; i < words.length; i++) {
-      const delta = Math.abs(
-        words.slice(0, i).join(" ").length - words.slice(i).join(" ").length
-      );
-      if (delta < bestDelta) {
-        bestDelta = delta;
-        bestSplit = i;
-      }
-    }
-    const lines = [words.slice(0, bestSplit).join(" "), words.slice(bestSplit).join(" ")];
-    for (let size = 22; size >= 12; size -= 1) {
-      if (fits(lines, size)) return { lines, size };
-    }
-    return { lines, size: 12 };
-  }
-
-  // 3. A single long word: no choice but to shrink it.
-  for (let size = 17; size >= 10; size -= 1) {
-    if (fits([name], size)) return { lines: [name], size };
-  }
-  return { lines: [name], size: 10 };
+function measure(ctx, text, size, bold = false) {
+  ctx.save();
+  ctx.font = `${bold ? "700 " : ""}${size}px ${UI_FONT}`;
+  const width = ctx.measureText(String(text).toUpperCase()).width;
+  ctx.restore();
+  return width;
 }
 
 // ── Deterministic randomness ───────────────────────────────────────────────
@@ -130,8 +117,6 @@ export function worldBounds(islands) {
   return { width: maxX + margin, height: maxY + margin };
 }
 
-// ── Drawing helpers ────────────────────────────────────────────────────────
-
 function strokePolygon(ctx, points, { x = 0, y = 0, color = INK, width = 2 } = {}) {
   if (points.length < 2) return;
   ctx.save();
@@ -148,36 +133,21 @@ function strokePolygon(ctx, points, { x = 0, y = 0, color = INK, width = 2 } = {
   ctx.restore();
 }
 
-const AVATAR_SHAPE = [
-  [1.0, 0.0],
-  [-0.7, 0.65],
-  [-0.4, 0.0],
-  [-0.7, -0.65],
-];
-
-function drawAvatar(ctx, x, y, angleDeg, { color = INK, width = 2, scale = WORLD.playerRadius } = {}) {
-  const a = (angleDeg * Math.PI) / 180;
-  const cos = Math.cos(a);
-  const sin = Math.sin(a);
-  const points = AVATAR_SHAPE.map(([px, py]) => [
-    (px * cos - py * sin) * scale,
-    (px * sin + py * cos) * scale,
-  ]);
-  strokePolygon(ctx, points, { x, y, color, width });
-}
-
 // ── The world ──────────────────────────────────────────────────────────────
 
 export class World {
-  constructor(registry) {
+  constructor(registry, avatar = DEFAULT_AVATAR) {
     this.islands = buildIslands(registry);
     this.bounds = worldBounds(this.islands);
 
-    // Start in the middle of the map so there's always something in view.
     this.player = {
+      handle: "YOU",
       x: this.bounds.width / 2,
       y: this.bounds.height / 2,
-      angle: -90,
+      avatar: sanitizeAvatar(avatar),
+      facing: 1,
+      moving: false,
+      walkPhase: 0,
       emote: null,
       emoteUntil: 0,
     };
@@ -185,6 +155,10 @@ export class World {
     this.camera = { x: this.player.x, y: this.player.y };
     this.time = 0;
     this.nearest = null;
+  }
+
+  setAvatar(avatar) {
+    this.player.avatar = sanitizeAvatar(avatar);
   }
 
   setOccupancy(counts) {
@@ -208,18 +182,25 @@ export class World {
           y: p.y,
           renderX: p.x,
           renderY: p.y,
-          angle: p.a ?? -90,
-          renderAngle: p.a ?? -90,
+          avatar: sanitizeAvatar(p.avatar),
+          facing: 1,
+          moving: false,
+          walkPhase: Math.random(),
           island: p.island ?? null,
           emote: null,
           emoteUntil: 0,
         };
         this.others.set(p.id, other);
       }
+
+      const dx = p.x - other.x;
+      other.moving = Math.hypot(dx, p.y - other.y) > 1;
+      if (Math.abs(dx) > 0.5) other.facing = dx > 0 ? 1 : -1;
+
       other.handle = p.handle || other.handle;
       other.x = p.x;
       other.y = p.y;
-      other.angle = p.a ?? other.angle;
+      if (p.avatar) other.avatar = sanitizeAvatar(p.avatar);
       other.island = p.island ?? null;
     }
     for (const id of [...this.others.keys()]) {
@@ -231,7 +212,12 @@ export class World {
     const target = id === myId ? this.player : this.others.get(id);
     if (!target) return;
     target.emote = emote;
-    target.emoteUntil = this.time + WORLD.emoteDuration;
+    target.emoteUntil = this.time + EMOTE_DURATION;
+  }
+
+  playEmote(emote) {
+    this.player.emote = emote;
+    this.player.emoteUntil = this.time + EMOTE_DURATION;
   }
 
   update(dt, input) {
@@ -244,16 +230,19 @@ export class World {
     if (input.up) dy -= 1;
     if (input.down) dy += 1;
 
-    if (dx || dy) {
+    const moving = dx !== 0 || dy !== 0;
+    this.player.moving = moving;
+    if (moving) {
       const len = Math.hypot(dx, dy);
       dx /= len;
       dy /= len;
       this.player.x += dx * WORLD.playerSpeed * dt;
       this.player.y += dy * WORLD.playerSpeed * dt;
-      this.player.angle = (Math.atan2(dy, dx) * 180) / Math.PI;
+      if (Math.abs(dx) > 0.01) this.player.facing = dx > 0 ? 1 : -1;
+      this.player.walkPhase = (this.player.walkPhase + dt * 2.2) % 1;
     }
 
-    // Stay on the map. Avatars pass through each other and through islands —
+    // Stay on the map. Figures pass through each other and through islands —
     // nobody gets to stand in a doorway and block it.
     this.player.x = Math.max(24, Math.min(this.bounds.width - 24, this.player.x));
     this.player.y = Math.max(24, Math.min(this.bounds.height - 24, this.player.y));
@@ -263,8 +252,7 @@ export class World {
     for (const other of this.others.values()) {
       other.renderX += (other.x - other.renderX) * ease;
       other.renderY += (other.y - other.renderY) * ease;
-      let delta = ((other.angle - other.renderAngle + 540) % 360) - 180;
-      other.renderAngle += delta * ease;
+      if (other.moving) other.walkPhase = (other.walkPhase + dt * 2.2) % 1;
     }
 
     this.nearest = this.findEnterable();
@@ -311,12 +299,19 @@ export class World {
     ctx.fillRect(0, 0, viewWidth, viewHeight);
 
     ctx.save();
-    ctx.translate(Math.round(viewWidth / 2 - this.camera.x), Math.round(viewHeight / 2 - this.camera.y));
+    ctx.translate(
+      Math.round(viewWidth / 2 - this.camera.x),
+      Math.round(viewHeight / 2 - this.camera.y)
+    );
 
     this.drawSea(ctx, viewWidth, viewHeight);
     for (const island of this.islands) this.drawIsland(ctx, island);
-    for (const other of this.others.values()) this.drawOther(ctx, other);
-    this.drawPlayer(ctx);
+
+    // Draw figures back-to-front so the nearer ones overlap correctly.
+    const figures = [...this.others.values(), this.player].sort(
+      (a, b) => (a.renderY ?? a.y) - (b.renderY ?? b.y)
+    );
+    for (const figure of figures) this.drawPerson(ctx, figure, figure === this.player);
 
     ctx.restore();
 
@@ -325,7 +320,7 @@ export class World {
 
   /** A sparse dot grid, so you can feel yourself moving across open water. */
   drawSea(ctx, viewWidth, viewHeight) {
-    const step = 84;
+    const step = 96;
     const left = this.camera.x - viewWidth / 2;
     const top = this.camera.y - viewHeight / 2;
     const startX = Math.floor(left / step) * step;
@@ -344,7 +339,7 @@ export class World {
   drawIsland(ctx, island) {
     const active = this.nearest === island;
 
-    // Shoreline.
+    // One outline. That's the whole island.
     strokePolygon(ctx, island.shape, {
       x: island.x,
       y: island.y,
@@ -352,105 +347,83 @@ export class World {
       width: active ? 4 : 2.5,
     });
 
-    // A lighter inner contour, like a map's elevation line.
-    const inner = island.shape.map(([x, y]) => [x * 0.76, y * 0.76]);
-    strokePolygon(ctx, inner, { x: island.x, y: island.y, color: FAINT, width: 1.5 });
+    const { lines, size } = this.fitLabel(ctx, island.name || island.id, island.radius * 1.1);
+    const lineHeight = size * 1.25;
+    let y = island.y - (lines.length * lineHeight) / 2 - 6;
 
-    // The island's name, shrunk (and wrapped) until it sits inside the shore.
-    const { lines, size } = fitLabel(island.name || island.id || "ISLAND", island.radius * 1.05);
-    const lineHeight = size * 1.35;
-    const blockTop = island.y - (lines.length * lineHeight) / 2 - 6;
+    for (const line of lines) {
+      label(ctx, line, island.x, y, size, { bold: true });
+      y += lineHeight;
+    }
 
-    lines.forEach((line, index) => {
-      drawText(ctx, line, island.x, blockTop + index * lineHeight, size, {
-        center: true,
-        color: INK,
-        width: active ? 3 : 2.5,
-      });
-    });
-
-    let below = blockTop + lines.length * lineHeight + 4;
-
+    y += 4;
     if (island.author) {
-      drawText(ctx, `BY ${island.author}`.slice(0, 18), island.x, below, 10, {
-        center: true,
-        color: MID,
-        width: 1.5,
-      });
-      below += 20;
+      label(ctx, `by ${island.author}`.slice(0, 20), island.x, y, 11, { color: MID });
+      y += 16;
     }
-
     if (island.occupants > 0) {
-      const label = island.occupants === 1 ? "1 PLAYING" : `${island.occupants} PLAYING`;
-      drawText(ctx, label, island.x, below, 10, {
-        center: true,
-        color: INK,
-        width: 1.5,
-      });
-    }
-
-    if (active) {
-      // A dashed ring showing you're in range.
-      ctx.save();
-      ctx.strokeStyle = MID;
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([7, 7]);
-      ctx.lineDashOffset = -this.time * 22;
-      ctx.beginPath();
-      ctx.arc(island.x, island.y, island.reach, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.restore();
+      label(ctx, island.occupants === 1 ? "1 playing" : `${island.occupants} playing`,
+        island.x, y, 11);
     }
   }
 
-  drawPlayer(ctx) {
-    const p = this.player;
-    drawAvatar(ctx, p.x, p.y, p.angle, { width: 2.5 });
-    drawText(ctx, "YOU", p.x, p.y - 34, 10, { center: true, color: MID, width: 1.5 });
-    this.drawEmote(ctx, p);
+  /** Shrink a name, then wrap it, until it fits inside the shoreline. */
+  fitLabel(ctx, rawName, maxWidth) {
+    const name = String(rawName).slice(0, 28);
+    const fits = (lines, size) => lines.every((l) => measure(ctx, l, size, true) <= maxWidth);
+
+    for (let size = 22; size >= 15; size -= 1) {
+      if (fits([name], size)) return { lines: [name], size };
+    }
+    const words = name.split(/\s+/).filter(Boolean);
+    if (words.length > 1) {
+      let best = 1;
+      let bestDelta = Infinity;
+      for (let i = 1; i < words.length; i++) {
+        const delta = Math.abs(
+          words.slice(0, i).join(" ").length - words.slice(i).join(" ").length
+        );
+        if (delta < bestDelta) {
+          bestDelta = delta;
+          best = i;
+        }
+      }
+      const lines = [words.slice(0, best).join(" "), words.slice(best).join(" ")];
+      for (let size = 19; size >= 11; size -= 1) {
+        if (fits(lines, size)) return { lines, size };
+      }
+      return { lines, size: 11 };
+    }
+    for (let size = 14; size >= 9; size -= 1) {
+      if (fits([name], size)) return { lines: [name], size };
+    }
+    return { lines: [name], size: 9 };
   }
 
-  drawOther(ctx, other) {
-    drawAvatar(ctx, other.renderX, other.renderY, other.renderAngle, { width: 2 });
-    drawText(ctx, other.handle.slice(0, 12), other.renderX, other.renderY - 34, 10, {
-      center: true,
-      color: INK,
-      width: 1.5,
+  drawPerson(ctx, person, isMe) {
+    const x = person.renderX ?? person.x;
+    const y = person.renderY ?? person.y;
+
+    const active = person.emote && this.time < person.emoteUntil;
+    const pose = poseFor({
+      emote: active ? person.emote : null,
+      emoteT: active ? 1 - (person.emoteUntil - this.time) / EMOTE_DURATION : 0,
+      walkPhase: person.walkPhase,
+      moving: person.moving,
     });
-    if (other.island) {
-      // They're inside an island right now.
-      drawText(ctx, "PLAYING", other.renderX, other.renderY + 22, 8, {
-        center: true,
-        color: MID,
-        width: 1.5,
-      });
-    }
-    this.drawEmote(ctx, other);
-  }
+    if (!active) person.emote = null;
 
-  drawEmote(ctx, entity) {
-    if (!entity.emote || this.time > entity.emoteUntil) return;
-    const size = 15;
-    const width = textWidth(entity.emote, size);
-    const x = entity.x ?? entity.renderX;
-    const y = (entity.y ?? entity.renderY) - 62;
+    drawFigure(ctx, x, y, person.avatar, pose, person.facing);
 
-    ctx.save();
-    ctx.fillStyle = PAPER;
-    ctx.strokeStyle = INK;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.rect(x - width / 2 - 9, y - 8, width + 18, size + 16);
-    ctx.fill();
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(x - 5, y + size + 8);
-    ctx.lineTo(x, y + size + 16);
-    ctx.lineTo(x + 5, y + size + 8);
-    ctx.stroke();
-    ctx.restore();
+    // Ride the bob, or the name lands on the figure's chest mid-jump. -70 clears
+    // the head plus the tallest hat.
+    const name = isMe ? "you" : person.handle.slice(0, 12);
+    label(ctx, name, x, y + (pose.bob || 0) - 70, 11, {
+      color: isMe ? MID : avatarColour(person.avatar),
+      bold: !isMe,
+    });
 
-    drawText(ctx, entity.emote, x, y, size, { center: true, color: INK, width: 2 });
+    if (person.island) label(ctx, "playing", x, y + 8, 9, { color: MID });
   }
 
   /** Top-left minimap: every island, and where you are among them. */
@@ -473,7 +446,7 @@ export class World {
     for (const island of this.islands) {
       ctx.fillRect(x + island.x * scaleX - 2, y + island.y * scaleY - 2, 4, 4);
     }
-    ctx.fillStyle = INK;
+    ctx.fillStyle = avatarColour(this.player.avatar);
     ctx.fillRect(x + this.player.x * scaleX - 2.5, y + this.player.y * scaleY - 2.5, 5, 5);
     ctx.restore();
   }

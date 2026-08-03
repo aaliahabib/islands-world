@@ -43,5 +43,3 @@ export const WORLD = {
   positionHz: 15,
   emoteDuration: 2.6,
 };
-
-export const EMOTES = ["HI", "GG", "WOW", "?", "!"];

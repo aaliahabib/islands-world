@@ -12,9 +12,12 @@ const RECONNECT_BASE_MS = 900;
 const RECONNECT_MAX_MS = 12000;
 
 export class Net extends EventTarget {
-  constructor(handle) {
+  constructor(handle, avatar = null) {
     super();
     this.handle = handle;
+    // Three small integers describing the player's stick figure. The server
+    // relays it verbatim; no avatar art ever goes over the wire.
+    this.avatar = avatar;
     this.socket = null;
     this.id = null;
     this.state = "offline";
@@ -55,7 +58,7 @@ export class Net extends EventTarget {
     socket.addEventListener("open", () => {
       this.attempts = 0;
       this.setState("online");
-      this.send({ t: "join", handle: this.handle });
+      this.send({ t: "join", handle: this.handle, avatar: this.avatar });
     });
 
     socket.addEventListener("message", (event) => {

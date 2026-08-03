@@ -55,6 +55,20 @@ function cleanNumber(value, limit) {
   return Math.max(-limit, Math.min(limit, Math.round(n)));
 }
 
+// A stick figure is three small indices: colour, head, hat. The server has no
+// idea what they mean and doesn't need to — it just refuses to relay anything
+// that isn't a small non-negative integer.
+const AVATAR_MAX = 32;
+
+function cleanAvatar(value) {
+  if (!value || typeof value !== "object") return null;
+  const index = (v) => {
+    const n = Number(v);
+    return Number.isInteger(n) && n >= 0 && n < AVATAR_MAX ? n : 0;
+  };
+  return { c: index(value.c), h: index(value.h), t: index(value.t) };
+}
+
 function cleanScore(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return null;
@@ -213,6 +227,8 @@ function handleMessage(client, raw) {
     case "join": {
       const handle = cleanHandle(message.handle);
       if (handle) client.handle = handle;
+      const avatar = cleanAvatar(message.avatar);
+      if (avatar) client.avatar = avatar;
       const { entries, worldTotal } = buildBoard();
       client.socket.send(
         JSON.stringify({
@@ -285,6 +301,7 @@ wss.on("connection", (socket, request) => {
     y: 0,
     a: -90,
     island: null,
+    avatar: null,
     alive: true,
     budget: 0,
     budgetAt: Date.now(),
@@ -329,6 +346,7 @@ setInterval(() => {
       y: client.y,
       a: client.a,
       island: client.island,
+      avatar: client.avatar,
     });
   }
   broadcast({ t: "world", players, islands: islandOccupancy() });

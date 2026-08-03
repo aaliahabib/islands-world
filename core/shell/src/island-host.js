@@ -173,6 +173,13 @@ export class IslandHost {
     const type = typeof data.type === "string" ? data.type : null;
     if (!type) return;
 
+    // ESC inside the island. The iframe holds keyboard focus while you play,
+    // so the shell can't see the key itself — islands_sdk forwards it.
+    if (type === "exit") {
+      this.exit();
+      return;
+    }
+
     const value = Number(data.value);
     if (!Number.isFinite(value)) return;
     const score = Math.trunc(value);

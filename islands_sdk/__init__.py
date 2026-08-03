@@ -26,6 +26,25 @@ import sys
 
 __all__ = ["submit_score", "game_over", "is_browser", "reset"]
 
+# JS installed into the island page so ESC gets you back to the world.
+#
+# The island runs in an iframe and takes keyboard focus while you play, which
+# means the overworld never sees your keystrokes — pressing ESC did nothing at
+# all. Nothing in the game's Python can fix that, because the key never reaches
+# Python either. So we listen at the page level and tell the shell to close us.
+_ESCAPE_BRIDGE = """
+(function () {
+  if (window.__islandsEscapeBridge) return;
+  window.__islandsEscapeBridge = true;
+  window.addEventListener("keydown", function (event) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      parent.postMessage({ type: "exit" }, "*");
+    }
+  }, true);
+})();
+"""
+
 # pygbag/Pyodide compile to Emscripten, which is how we know we are in a browser.
 IS_BROWSER = sys.platform == "emscripten"
 
@@ -38,6 +57,12 @@ if IS_BROWSER:  # pragma: no cover - only true inside the browser build
         _window = _pygbag_platform.window
     except Exception:
         _window = None
+
+    if _window is not None:
+        try:
+            _window.eval(_ESCAPE_BRIDGE)
+        except Exception:
+            pass  # ESC just won't work; the on-screen back button still does
 
 # Remember the last score we sent so a game calling submit_score() every frame
 # doesn't flood the shell (and the server) with identical messages.

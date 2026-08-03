@@ -166,29 +166,11 @@ body {
   left: 50%;
   bottom: clamp(96px, 16vh, 150px);
   transform: translateX(-50%);
-  border: 2px solid var(--ink);
   background: var(--paper);
   padding: 8px 16px;
   font-size: 13px;
   letter-spacing: 0.16em;
   white-space: nowrap;
-  animation: nudge 1.4s ease-in-out infinite;
-}
-
-@keyframes nudge {
-  0%,
-  100% {
-    transform: translate(-50%, 0);
-  }
-  50% {
-    transform: translate(-50%, -4px);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  #prompt {
-    animation: none;
-  }
 }
 
 /* ── Bottom bar ─────────────────────────────────────────────────────────── */
@@ -327,6 +309,59 @@ kbd {
   font-size: 11px;
   color: var(--mid);
   letter-spacing: 0.06em;
+}
+
+/* ── Figure picker ──────────────────────────────────────────────────────── */
+
+#avatar-preview {
+  width: 120px;
+  height: 120px;
+}
+
+#avatar-picker {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+}
+
+.avatar-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.avatar-row .avatar-label {
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  color: var(--mid);
+  min-width: 62px;
+  text-align: left;
+}
+
+.avatar-row .avatar-value {
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  flex: 1;
+}
+
+.avatar-row button {
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 2px solid var(--ink);
+  background: var(--paper);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.avatar-row button:hover,
+.avatar-row button:focus-visible {
+  background: var(--ink);
+  color: var(--paper);
 }
 
 /* ── Island stage ───────────────────────────────────────────────────────── */

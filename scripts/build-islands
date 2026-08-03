@@ -26,6 +26,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -160,7 +161,7 @@ def stage(island_id: str) -> Path:
     return staging
 
 
-def build_wasm(island_id: str, manifest: dict) -> Path | None:
+def build_wasm(island_id: str, manifest: dict, version: str) -> Path | None:
     staging = stage(island_id)
     command = [
         sys.executable,
@@ -197,11 +198,22 @@ def build_wasm(island_id: str, manifest: dict) -> Path | None:
     # disappears into the game.
     index = web / "index.html"
     try:
-        index.write_text(
-            index.read_text(encoding="utf-8").replace("#7f7f7f", "#000000"), encoding="utf-8"
-        )
+        html = index.read_text(encoding="utf-8")
+        html = html.replace("#7f7f7f", "#000000")
+
+        # Cache-bust the archive that holds the student's actual code.
+        #
+        # GitHub Pages serves everything with `cache-control: max-age=600`. We
+        # already version the iframe URL, but pygbag fetches the archive by a
+        # bare filename — so for ten minutes after a deploy a student would
+        # reload and still be handed their OLD game out of the browser cache.
+        # That breaks the entire "share it, see it live" loop the class runs on.
+        for suffix in (".tar.gz", ".apk"):
+            html = html.replace(f'"{island_id}{suffix}"', f'"{island_id}{suffix}?v={version}"')
+
+        index.write_text(html, encoding="utf-8")
     except OSError as error:
-        print(f"  ! could not restyle {island_id}'s page background ({error})")
+        print(f"  ! could not post-process {island_id}'s page ({error})")
 
     print(f"  ✓ {island_id}")
     return web
@@ -224,8 +236,44 @@ def copy_shell() -> None:
             shutil.copy2(item, target)
 
 
+def runtime_assets() -> dict:
+    """Find the Python runtime URLs pygbag baked into a built island.
+
+    The runtime is ~21 MB (main.wasm 13.4, main.data 6.7, main.js 0.9) and is
+    shared by every island — it's the whole reason the first island a browser
+    opens takes about a minute. Handing these URLs to the shell lets it warm
+    the browser cache while the player is still walking around the map, so the
+    download overlaps with the part of class where nobody is waiting.
+    """
+    for index in sorted((SITE_DIR / "islands").glob("*/index.html")):
+        html = index.read_text(encoding="utf-8", errors="replace")
+        cdn = re.search(r'cdn\s*:\s*"([^"]+)"', html)
+        # The interpreter URL isn't in the page — pygbag assembles it at runtime
+        # as {cdn}cpython{digits}/main.js — so rebuild it the same way.
+        pybuild = re.search(r'PYBUILD\s*:\s*"([\d.]+)"', html) or re.search(
+            r'data-python="python([\d.]+)"', html
+        )
+        if not (cdn and pybuild):
+            continue
+
+        base = f"{cdn.group(1)}cpython{pybuild.group(1).replace('.', '')}"
+        return {
+            "cdn": cdn.group(1),
+            # Biggest first, so the long download starts immediately.
+            "assets": [
+                f"{base}/main.wasm",
+                f"{base}/main.data",
+                f"{base}/main.js",
+                f"{cdn.group(1)}pythons.js",
+            ],
+        }
+    return {}
+
+
 def write_registry(entries: list[dict]) -> None:
-    payload = json.dumps(entries, indent=2) + "\n"
+    payload = json.dumps(
+        {"islands": entries, "runtime": runtime_assets()}, indent=2
+    ) + "\n"
     (SITE_DIR / "registry.json").write_text(payload, encoding="utf-8")
     # A copy at the repo root is handy when debugging; it is gitignored.
     (REPO_ROOT / "registry.json").write_text(payload, encoding="utf-8")
@@ -314,11 +362,13 @@ def main() -> int:
         print("→ nothing to build")
         return 0
 
+    versions = {entry["id"]: entry["version"] for entry in entries}
+
     print(f"building {len(targets)} island(s)…")
     failures = []
     for island_id in targets:
         manifest = read_manifest(island_id)
-        web = build_wasm(island_id, manifest)
+        web = build_wasm(island_id, manifest, versions[island_id])
         if web is None:
             failures.append(island_id)
             continue
@@ -332,6 +382,15 @@ def main() -> int:
         # This is the quality gate: a broken island must not reach the world.
         print(f"\n✗ {len(failures)} island(s) failed to build: {', '.join(failures)}")
         return 1
+
+    # Rewrite the registry now that bundles exist — this is the pass that can
+    # actually find the Python runtime URLs for the shell to preload.
+    write_registry(entries)
+    runtime = runtime_assets()
+    if runtime:
+        print(f"→ runtime preload: {len(runtime['assets'])} asset(s) from {runtime['cdn']}")
+    else:
+        print("! could not find the runtime URLs — the shell won't preload (islands still work)")
 
     print("\nbuild complete ✅")
     return 0

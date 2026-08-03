@@ -59,9 +59,10 @@ function pickIsland() {
   if (!existsSync(registryPath)) {
     throw new Error("no site/registry.json — run scripts/build-islands first");
   }
-  const registry = JSON.parse(readFileSync(registryPath, "utf8"));
-  if (!registry.length) throw new Error("registry is empty — add an island first");
-  return registry[0].id;
+  const data = JSON.parse(readFileSync(registryPath, "utf8"));
+  const islands = Array.isArray(data) ? data : data.islands;
+  if (!islands?.length) throw new Error("registry is empty — add an island first");
+  return islands[0].id;
 }
 
 // ── the harness page ───────────────────────────────────────────────────────
