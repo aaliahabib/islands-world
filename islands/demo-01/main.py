@@ -31,7 +31,7 @@ from islands_sdk import game_over, reset as reset_score, submit_score
 #  break the game; the worst that happens is it gets silly.
 # ─────────────────────────────────────────────────────────────────────────────
 
-TITLE = "ASTEROIDS"
+TITLE = "Asteroid Island"
 
 WIDTH = 900                      # size of the game window
 HEIGHT = 700
