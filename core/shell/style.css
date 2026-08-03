@@ -364,6 +364,17 @@ kbd {
   background: #000;
 }
 
+/* The browser's default focus ring is bright blue, which fights everything
+   else on screen. Keep the affordance, lose the colour. */
+#island-frame-wrap iframe:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: -2px;
+}
+
+#island-frame-wrap iframe:focus:not(:focus-visible) {
+  outline: none;
+}
+
 #island-chrome {
   display: flex;
   align-items: center;
@@ -413,6 +424,13 @@ kbd {
   padding: 24px;
 }
 
+/* Fully opaque while loading, so pygbag's own green loading chrome never
+   shows through. Game-over and broken stay translucent — seeing the run you
+   just finished behind the overlay is the point. */
+#island-status[data-mode="loading"] {
+  background: #000;
+}
+
 #island-status[hidden] {
   display: none;
 }
@@ -436,6 +454,8 @@ kbd {
   letter-spacing: 0.1em;
   color: #bbb;
   line-height: 1.7;
+  white-space: pre-line;
+  min-height: 1em;
 }
 
 #island-status .final {

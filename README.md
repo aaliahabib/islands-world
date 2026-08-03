@@ -104,14 +104,14 @@ play — you just get no shared scoreboard.
 
 **3. Hosting headers**
 
-Whatever serves the site must send `Cross-Origin-Resource-Policy: cross-origin`
-on the island bundles. GitHub Pages does this by default.
-
 Do **not** set `Cross-Origin-Embedder-Policy: require-corp`. pygbag's own dev
 server sends it, but islands load their Python runtime from
 `pygame-web.github.io`, which sends no CORP header — under `require-corp` the
 browser blocks the runtime and every island hangs on "Loading". This one cost an
 afternoon; don't rediscover it.
+
+GitHub Pages works as-is (it sends `access-control-allow-origin: *` and no
+COEP). If you move to another host, the only rule is: don't add COEP.
 
 **4. The islands**
 
@@ -169,6 +169,12 @@ yes, look closer. The CI build is your smoke test — a broken island fails the
 build and nothing deploys, so the world can't go down because of one student.
 
 Undo is `git revert`. History is the safety net.
+
+> **Warm the cache before the room does.** The first island a browser ever
+> opens downloads the whole CPython+pygame WASM runtime — measured at ~57s off
+> GitHub Pages on a cold cache. Every island after that is quick, because the
+> runtime is cached. Open the world once on each machine before the session
+> starts, or that minute happens ten times at once while everyone watches.
 
 **Session 1** — demo the world (5 min), everyone gets the template running in
 PyCharm, makes one small change, shares, sees it live. The goal is that every

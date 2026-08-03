@@ -6,7 +6,14 @@
 
 import { CONFIG } from "./config.js";
 
-const LOAD_TIMEOUT_MS = 30000;
+// Booting an island means downloading a whole CPython+pygame WASM runtime from
+// pygame-web.github.io. On a cold cache over a school network that genuinely
+// takes a minute — measured at ~57s against GitHub Pages. Anything less than a
+// very generous ceiling here shows "this island looks broken" to students who
+// are just... waiting, and they give up and walk away. Later islands in the
+// same browser are much faster because the runtime is cached.
+const LOAD_TIMEOUT_MS = 180000;
+const PROGRESS_POLL_MS = 700;
 
 export class IslandHost {
   /**
@@ -102,22 +109,57 @@ export class IslandHost {
     iframe.src = `${island.bundleUrl}${island.bundleUrl.includes("?") ? "&" : "?"}v=${version}`;
     this.frameWrap.replaceChildren(iframe);
 
-    // pygbag builds take a moment to download and boot the Python runtime. If
-    // nothing has happened well past that, the island is broken.
+    this.loadStartedAt = Date.now();
     this.loadTimer = setTimeout(() => {
       if (!this.booted) this.showBroken();
     }, LOAD_TIMEOUT_MS);
-
-    iframe.addEventListener("load", () => {
-      // The document loaded; the game may still be booting Python. Give the
-      // island a chance to say hello, but hide the spinner once pixels can
-      // plausibly be on screen.
-      setTimeout(() => {
-        if (this.island === island && !this.booted) this.hideStatus();
-      }, 2500);
-    });
+    this.progressTimer = setInterval(() => this.pollProgress(), PROGRESS_POLL_MS);
 
     iframe.focus();
+  }
+
+  /**
+   * Watch the island boot and keep the student informed.
+   *
+   * When the iframe is same-origin we can see pygbag's own status line and,
+   * more usefully, whether the game has actually created its canvas — that's
+   * the real "it's alive" signal, and it doesn't depend on the student's code
+   * remembering to call submit_score.
+   */
+  pollProgress() {
+    if (!this.iframe || !this.island || this.booted) return;
+    const elapsed = Math.round((Date.now() - this.loadStartedAt) / 1000);
+
+    let inner = null;
+    try {
+      inner = this.iframe.contentDocument;
+    } catch {
+      inner = null; // strict sandbox — an opaque origin, nothing to read
+    }
+
+    if (inner) {
+      const canvas = inner.querySelector("canvas");
+      if (canvas && canvas.width > 1 && canvas.height > 1) {
+        this.markBooted();
+        return;
+      }
+    } else if (elapsed > 6) {
+      // Can't see inside, so we can't do better than get out of the way.
+      this.markBooted();
+      return;
+    }
+
+    const pygbagStatus = inner?.getElementById?.("status")?.textContent?.trim();
+    this.setLoadingDetail(pygbagStatus, elapsed);
+  }
+
+  markBooted() {
+    this.booted = true;
+    clearTimeout(this.loadTimer);
+    clearInterval(this.progressTimer);
+    this.loadTimer = null;
+    this.progressTimer = null;
+    this.hideStatus();
   }
 
   onMessage(event) {
@@ -135,12 +177,10 @@ export class IslandHost {
     if (!Number.isFinite(value)) return;
     const score = Math.trunc(value);
 
-    this.booted = true;
-    clearTimeout(this.loadTimer);
-    this.loadTimer = null;
+    // Hearing from the island at all proves it booted.
+    this.markBooted();
 
     if (type === "score") {
-      this.hideStatus();
       this.liveScore = score;
       this.handlers.onScore?.(this.island, score);
     } else if (type === "game_over") {
@@ -152,7 +192,11 @@ export class IslandHost {
 
   // ── Overlays ─────────────────────────────────────────────────────────────
 
-  showStatus(node) {
+  showStatus(node, mode) {
+    // Loading covers the island completely — pygbag's own green loading chrome
+    // is not part of this world. Game-over and broken stay translucent so you
+    // can still see the run you just finished behind them.
+    this.statusEl.dataset.mode = mode;
     this.statusEl.replaceChildren(node);
     this.statusEl.hidden = false;
   }
@@ -165,13 +209,31 @@ export class IslandHost {
   showLoading() {
     const box = document.createElement("div");
     box.className = "box";
+
     const spinner = document.createElement("div");
     spinner.className = "spinner";
+
     const headline = document.createElement("div");
     headline.className = "detail";
     headline.textContent = "LOADING ISLAND…";
-    box.append(spinner, headline);
-    this.showStatus(box);
+
+    // Updated by pollProgress so a slow first load never looks like a hang.
+    this.loadingDetail = document.createElement("div");
+    this.loadingDetail.className = "detail";
+
+    box.append(spinner, headline, this.loadingDetail);
+    this.showStatus(box, "loading");
+  }
+
+  setLoadingDetail(pygbagStatus, elapsed) {
+    if (!this.loadingDetail) return;
+    const lines = [];
+    if (pygbagStatus) lines.push(pygbagStatus.toUpperCase());
+    if (elapsed > 8) {
+      lines.push("First island takes a minute — it's downloading Python.");
+      lines.push("The next one will be quick.");
+    }
+    this.loadingDetail.textContent = lines.join("\n");
   }
 
   showGameOver(score) {
@@ -205,7 +267,7 @@ export class IslandHost {
 
     actions.append(again, back);
     box.append(headline, final, detail, actions);
-    this.showStatus(box);
+    this.showStatus(box, "over");
     back.focus();
   }
 
@@ -220,7 +282,8 @@ export class IslandHost {
     const detail = document.createElement("div");
     detail.className = "detail";
     detail.textContent =
-      "It didn't finish loading. That's on the island, not on you — go tell whoever owns it.";
+      "It didn't finish loading after three minutes. That's on the island, not " +
+      "on you — go tell whoever owns it.";
 
     const actions = document.createElement("div");
     actions.className = "actions";
@@ -237,7 +300,7 @@ export class IslandHost {
 
     actions.append(retry, back);
     box.append(headline, detail, actions);
-    this.showStatus(box);
+    this.showStatus(box, "broken");
     back.focus();
   }
 
@@ -252,13 +315,17 @@ export class IslandHost {
 
   teardown() {
     clearTimeout(this.loadTimer);
+    clearInterval(this.progressTimer);
     this.loadTimer = null;
+    this.progressTimer = null;
+    this.loadingDetail = null;
     // Removing the iframe destroys the whole Python runtime with it — no
     // leftover timers, audio, or state bleeding into the next island.
     this.frameWrap.replaceChildren();
     this.iframe = null;
     this.island = null;
     this.booted = false;
+    this.loadStartedAt = 0;
     this.hideStatus();
   }
 
