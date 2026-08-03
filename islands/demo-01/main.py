@@ -37,7 +37,7 @@ WIDTH = 900                      # size of the game window
 HEIGHT = 700
 
 BACKGROUND = (0, 0, 0)           # colours are (RED, GREEN, BLUE), 0–255
-LINE_COLOR = (255, 255, 255)     # everything is drawn as lines in this colour
+LINE_COLOR = (0, 255, 0)         # everything is drawn as lines in this colour
 LINE_WIDTH = 2
 FONT_NAME = None                 # None = pygame's built-in font
 
