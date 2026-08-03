@@ -170,11 +170,21 @@ build and nothing deploys, so the world can't go down because of one student.
 
 Undo is `git revert`. History is the safety net.
 
-> **Warm the cache before the room does.** The first island a browser ever
-> opens downloads the whole CPython+pygame WASM runtime — measured at ~57s off
-> GitHub Pages on a cold cache. Every island after that is quick, because the
-> runtime is cached. Open the world once on each machine before the session
-> starts, or that minute happens ten times at once while everyone watches.
+> **Warm the cache before the room does.** The first island a browser ever opens
+> needs the whole CPython+pygame WASM runtime — 21 MB, about 8.9 MB compressed.
+> The shell starts pulling it in the background the moment the world loads, so
+> the download overlaps with walking around instead of blocking you after you
+> press E. Measured against GitHub Pages on a cold browser:
+>
+> | Time in the world before pressing E | E → playable |
+> |---|---|
+> | none | >60s |
+> | 30s | 50s |
+> | ~50s (preload finished) | **7s** |
+>
+> Every island after the first is fast, because the runtime is shared and
+> cached. Open the world once on each machine before the session starts, or
+> that first minute happens on ten machines at once while everyone watches.
 
 **Session 1** — demo the world (5 min), everyone gets the template running in
 PyCharm, makes one small change, shares, sees it live. The goal is that every
