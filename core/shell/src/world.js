@@ -415,15 +415,15 @@ export class World {
 
     drawFigure(ctx, x, y, person.avatar, pose, person.facing);
 
-    // Ride the bob, or the name lands on the figure's chest mid-jump. -70 clears
-    // the head plus the tallest hat.
+    // Name sits under the feet, pinned to the ground rather than to the figure —
+    // so it stays put while they jump instead of bouncing along with them.
     const name = isMe ? "you" : person.handle.slice(0, 12);
-    label(ctx, name, x, y + (pose.bob || 0) - 70, 11, {
+    label(ctx, name, x, y + 7, 11, {
       color: isMe ? MID : avatarColour(person.avatar),
       bold: !isMe,
     });
 
-    if (person.island) label(ctx, "playing", x, y + 8, 9, { color: MID });
+    if (person.island) label(ctx, "playing", x, y + 22, 9, { color: MID });
   }
 
   /** Top-left minimap: every island, and where you are among them. */
