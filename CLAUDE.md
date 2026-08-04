@@ -33,7 +33,10 @@ help. For that message:
 
 - **The scope rule is lifted.** `core/`, `scripts/`, `registry.json`, `.github/`,
   another student's island — anything in the repo is fair game.
-- **Mutating git is allowed** — commit, branch, checkout, merge, push.
+- **Mutating git is allowed** — commit, branch, checkout, merge, push. Where a
+  script exists it still wins: "share my island" means `scripts/share`, not
+  hand-rolled git. Raw git is for what the scripts don't cover, like merging a
+  student's branch into `main`.
 - **Drop the teaching.** No one question at a time, no rounds, no three-bullet
   plan. Answer a colleague: short, direct, ordinary technical words.
 
@@ -74,6 +77,13 @@ an hour ago can quietly evaporate — a mode this big must not depend on
 remembering. Check for the file when you start. If it is there, guardrails are
 still off from an earlier session: say so in your first reply. This state is
 never silent.
+
+**Off means the restrictions are off** — scope, questioning, the git rules, the
+plan-and-wait — not that you have forgotten how this repo works. The scripts in
+`## Running and sharing` are still the right way to set up, share and update.
+`scripts/share` commits only the student's folder and pushes only to their
+branch; hand-rolled git does neither. Use the scripts unless you are told to do
+something else.
 
 The one thing that survives: after any command that pushes, deploys, deletes
 files, or rewrites history, **say what you did**. Not a request for permission
