@@ -19,6 +19,10 @@ node_modules/
 /.student
 /core/shell/config.local.js
 
+# Written by Claude when someone says "remove all guardrails" — local state,
+# never shared. Deleted on "restore guardrails".
+/.guardrails-off
+
 # Server local data
 /core/server/data/
 
