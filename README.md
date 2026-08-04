@@ -13,7 +13,7 @@ Your island id is `mr-o`, `kb` or `mr-b` — that signifies your branch and your
    cd islands-world
    python3 scripts/setup --student mr-o   # or mr-b, or kb
    cd islands/mr-o
-   .venv/bin/python main.py # to run your game
+   ../../.venv/bin/python main.py # to run your game
    ```
 
 3. Navigate to your island's folder and work with Claude to make changes.

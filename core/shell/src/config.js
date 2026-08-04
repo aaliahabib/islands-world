@@ -17,7 +17,7 @@ function deriveServerUrl() {
 
 export const CONFIG = {
   serverUrl: deriveServerUrl(),
-  worldName: raw.worldName || "ISLANDS WORLD",
+  worldName: raw.worldName || "ASTEROID ISLAND",
   strictSandbox: raw.strictSandbox === true,
 };
 

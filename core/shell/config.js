@@ -13,7 +13,7 @@ window.ISLANDS_CONFIG = {
   serverUrl: null,
 
   // The name of the world, drawn on the map.
-  worldName: "ISLANDS WORLD",
+  worldName: "ASTEROID ISLAND",
 
   // Islands are untrusted code — one student's game runs in everyone else's
   // browser — so they are mounted in a sandboxed iframe.
