@@ -1,9 +1,9 @@
 """ASTEROIDS — your island's game.
 
-Fly the ship, shoot the rocks, don't get hit. Big rocks split into smaller ones.
+Fly the ship, shoot the unicorns, don't get hit. Big unicorns split into
+smaller ones.
 
-    LEFT / RIGHT  (or A / D)   turn
-    UP            (or W)       thrust
+    ARROW KEYS    (or WASD)    move — the ship faces the way you're moving
     SPACE                      shoot
     R                          restart after game over
 
@@ -20,6 +20,7 @@ Two rules that keep your island working inside Islands World:
 
 import asyncio
 import math
+import os
 import random
 
 import pygame
@@ -41,8 +42,10 @@ LINE_COLOR = (255, 255, 255)     # everything is drawn as lines in this colour
 LINE_WIDTH = 2
 FONT_NAME = None                 # None = pygame's built-in font
 
+MUSIC_FILE = "annod-kuntryboy.mp3"   # background music, loops the whole game
+MUSIC_VOLUME = 0.5                   # 0.0 (silent) to 1.0 (full volume)
+
 SHIP_SIZE = 22                   # how big the ship is
-SHIP_TURN_SPEED = 220            # degrees per second
 SHIP_THRUST = 340                # how hard the engine pushes
 SHIP_MAX_SPEED = 430             # top speed
 SHIP_DRAG = 0.45                 # how fast you coast to a stop (0 = never)
@@ -54,13 +57,25 @@ BULLET_COOLDOWN = 0.20           # seconds between shots
 MAX_BULLETS = 5
 
 STARTING_LIVES = 3
-STARTING_ROCKS = 4               # rocks in wave 1; each wave adds one more
+STARTING_UNICORNS = 4            # unicorns in wave 1; each wave adds one more
 
-# Rocks come in 3 sizes. size 3 = big, 2 = medium, 1 = small.
-ROCK_RADIUS = {3: 54, 2: 30, 1: 16}
-ROCK_SPEED = {3: 55, 2: 90, 1: 140}
-ROCK_POINTS = {3: 20, 2: 50, 1: 100}   # points for shooting one
-ROCK_SPLIT_COUNT = 2                   # how many pieces a rock breaks into
+# Unicorns come in 3 sizes. size 3 = big, 2 = medium, 1 = small.
+UNICORN_RADIUS = {3: 54, 2: 30, 1: 16}
+UNICORN_SPEED = {3: 55, 2: 90, 1: 140}
+UNICORN_POINTS = {3: 20, 2: 50, 1: 100}   # points for shooting one
+UNICORN_SPLIT_COUNT = 2                   # how many pieces a unicorn breaks into
+
+# Each edge of a unicorn is drawn in the next colour from this list, so every
+# unicorn is rainbow-coloured all over. Add, remove, or reorder colours.
+RAINBOW_COLORS = [
+    (255, 0, 0),      # red
+    (255, 140, 0),    # orange
+    (255, 230, 0),    # yellow
+    (0, 200, 0),      # green
+    (0, 120, 255),    # blue
+    (130, 0, 255),    # violet
+    (255, 0, 200),    # pink
+]
 
 FPS = 60
 
@@ -123,18 +138,26 @@ class Ship:
         self.radius = SHIP_SIZE * 0.7
 
     def update(self, dt, keys):
-        turning = 0
+        dx = 0
+        dy = 0
         if keys[pygame.K_LEFT] or keys[pygame.K_a]:
-            turning -= 1
+            dx -= 1
         if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
-            turning += 1
-        self.angle += turning * SHIP_TURN_SPEED * dt
+            dx += 1
+        if keys[pygame.K_UP] or keys[pygame.K_w]:
+            dy -= 1
+        if keys[pygame.K_DOWN] or keys[pygame.K_s]:
+            dy += 1
 
-        self.thrusting = keys[pygame.K_UP] or keys[pygame.K_w]
+        # Face and thrust toward whatever direction is held. Diagonals are
+        # normalized so holding two keys isn't faster than holding one.
+        self.thrusting = dx != 0 or dy != 0
         if self.thrusting:
-            radians = math.radians(self.angle)
-            self.vx += math.cos(radians) * SHIP_THRUST * dt
-            self.vy += math.sin(radians) * SHIP_THRUST * dt
+            self.angle = math.degrees(math.atan2(dy, dx))
+            length = math.hypot(dx, dy)
+            ux, uy = dx / length, dy / length
+            self.vx += ux * SHIP_THRUST * dt
+            self.vy += uy * SHIP_THRUST * dt
 
         # Drag, then speed limit.
         damping = max(0.0, 1.0 - SHIP_DRAG * dt)
@@ -193,30 +216,36 @@ class Bullet:
         pygame.draw.rect(surface, LINE_COLOR, (self.x - 1.5, self.y - 1.5, 3, 3), 0)
 
 
-class Rock:
+class Unicorn:
+    # A unicorn outline, horn first. Change these points to reshape it — each
+    # edge gets its own colour from RAINBOW_COLORS above, so it stays rainbow
+    # no matter how you redraw it.
+    SHAPE = [
+        (0.10, -1.00),   # horn tip
+        (0.45, -0.70),   # head
+        (0.70, -0.45),   # muzzle
+        (0.55, -0.25),   # chin
+        (0.45, 0.60),    # front leg
+        (0.15, 0.20),    # belly
+        (-0.35, 0.60),   # back leg
+        (-0.55, 0.10),   # rear
+        (-0.90, -0.10),  # tail
+        (-0.35, -0.55),  # back
+        (-0.05, -0.75),  # mane
+    ]
+
     def __init__(self, x, y, size):
         self.x = x
         self.y = y
         self.size = size
-        self.radius = ROCK_RADIUS[size]
+        self.radius = UNICORN_RADIUS[size]
 
         angle = random.uniform(0, math.tau)
-        speed = ROCK_SPEED[size] * random.uniform(0.7, 1.3)
+        speed = UNICORN_SPEED[size] * random.uniform(0.7, 1.3)
         self.vx = math.cos(angle) * speed
         self.vy = math.sin(angle) * speed
         self.spin = random.uniform(-60, 60)
         self.angle = random.uniform(0, 360)
-
-        # A lumpy circle with a few deep notches — this is what makes rocks look
-        # like rocks instead of like blobs.
-        corners = random.randint(9, 12)
-        self.shape = []
-        for i in range(corners):
-            theta = math.tau * i / corners
-            jitter = random.uniform(0.78, 1.1)
-            if random.random() < 0.25:
-                jitter = random.uniform(0.42, 0.58)   # a chunk taken out
-            self.shape.append((math.cos(theta) * jitter, math.sin(theta) * jitter))
 
     def update(self, dt):
         self.x, self.y = wrap(self.x + self.vx * dt, self.y + self.vy * dt)
@@ -230,15 +259,20 @@ class Rock:
                 self.x + (px * cos_a - py * sin_a) * self.radius,
                 self.y + (px * sin_a + py * cos_a) * self.radius,
             )
-            for px, py in self.shape
+            for px, py in self.SHAPE
         ]
-        draw_shape(surface, points)
+        # Draw each edge in the next rainbow colour, instead of one solid
+        # colour, so every unicorn is multicoloured all over.
+        for i, start in enumerate(points):
+            end = points[(i + 1) % len(points)]
+            color = RAINBOW_COLORS[i % len(RAINBOW_COLORS)]
+            pygame.draw.line(surface, color, start, end, LINE_WIDTH)
 
     def split(self):
-        """Break into smaller rocks. Smallest rocks just vanish."""
+        """Break into smaller unicorns. Smallest ones just vanish."""
         if self.size <= 1:
             return []
-        return [Rock(self.x, self.y, self.size - 1) for _ in range(ROCK_SPLIT_COUNT)]
+        return [Unicorn(self.x, self.y, self.size - 1) for _ in range(UNICORN_SPLIT_COUNT)]
 
 
 class Debris:
@@ -284,7 +318,7 @@ class Game:
     def start_new_game(self):
         self.ship = Ship()
         self.bullets = []
-        self.rocks = []
+        self.unicorns = []
         self.debris = []
         self.score = 0
         self.lives = STARTING_LIVES
@@ -298,15 +332,15 @@ class Game:
 
     def next_wave(self):
         self.wave += 1
-        count = STARTING_ROCKS + self.wave - 1
+        count = STARTING_UNICORNS + self.wave - 1
         for _ in range(count):
-            # Spawn away from the middle so rocks don't appear on top of the ship.
+            # Spawn away from the middle so unicorns don't appear on top of the ship.
             while True:
                 x = random.uniform(0, WIDTH)
                 y = random.uniform(0, HEIGHT)
                 if math.hypot(x - WIDTH / 2, y - HEIGHT / 2) > 180:
                     break
-            self.rocks.append(Rock(x, y, 3))
+            self.unicorns.append(Unicorn(x, y, 3))
 
     def shoot(self):
         if self.fire_timer > 0 or len(self.bullets) >= MAX_BULLETS:
@@ -345,45 +379,45 @@ class Game:
             bullet.update(dt)
         self.bullets = [b for b in self.bullets if b.life > 0]
 
-        for rock in self.rocks:
-            rock.update(dt)
+        for unicorn in self.unicorns:
+            unicorn.update(dt)
 
         for burst in self.debris:
             burst.update(dt)
         self.debris = [d for d in self.debris if d.life > 0]
 
-        # Bullets vs rocks.
-        surviving_rocks = []
-        for rock in self.rocks:
+        # Bullets vs unicorns.
+        surviving_unicorns = []
+        for unicorn in self.unicorns:
             hit_by = None
             for bullet in self.bullets:
-                if collides(rock, bullet):
+                if collides(unicorn, bullet):
                     hit_by = bullet
                     break
             if hit_by is None:
-                surviving_rocks.append(rock)
+                surviving_unicorns.append(unicorn)
                 continue
             self.bullets.remove(hit_by)
-            self.add_score(ROCK_POINTS[rock.size])
-            self.debris.append(Debris(rock.x, rock.y))
-            surviving_rocks.extend(rock.split())
-        self.rocks = surviving_rocks
+            self.add_score(UNICORN_POINTS[unicorn.size])
+            self.debris.append(Debris(unicorn.x, unicorn.y))
+            surviving_unicorns.extend(unicorn.split())
+        self.unicorns = surviving_unicorns
 
-        # Rocks vs ship.
+        # Unicorns vs ship.
         if self.ship.invuln <= 0:
-            for rock in self.rocks:
-                if collides(rock, self.ship):
+            for unicorn in self.unicorns:
+                if collides(unicorn, self.ship):
                     self.lose_a_life()
                     break
 
-        if not self.rocks:
+        if not self.unicorns:
             self.next_wave()
 
     def draw(self, surface):
         surface.fill(BACKGROUND)
 
-        for rock in self.rocks:
-            rock.draw(surface)
+        for unicorn in self.unicorns:
+            unicorn.draw(surface)
         for bullet in self.bullets:
             bullet.draw(surface)
         for burst in self.debris:
@@ -421,6 +455,11 @@ async def main():
     pygame.display.set_caption(TITLE)
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
     clock = pygame.time.Clock()
+
+    music_path = os.path.join(os.path.dirname(__file__), MUSIC_FILE)
+    pygame.mixer.music.load(music_path)
+    pygame.mixer.music.set_volume(MUSIC_VOLUME)
+    pygame.mixer.music.play(loops=-1)
 
     game = Game()
     running = True
