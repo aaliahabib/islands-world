@@ -40,6 +40,12 @@ jobs:
         with:
           python-version: "3.12"
 
+      # pygbag shells out to ffmpeg to convert audio for the browser. Without it
+      # any island using an .mp3 fails to build — students add music, so this
+      # needs to be here.
+      - name: Install ffmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+
       - name: Install build tools
         run: python -m pip install --quiet --upgrade pip pygame-ce pygbag
 
@@ -57,8 +63,16 @@ jobs:
       - name: Smoke-test every island
         run: python scripts/check-island --all
 
+      # On a push, build only what moved. Run the workflow by hand
+      # (Actions → Run workflow) to rebuild every island — needed after a change
+      # that affects builds without touching any island folder, like this one.
       - name: Build changed islands and assemble the site
-        run: python scripts/build-islands --changed --base "${{ github.event.before }}"
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            python scripts/build-islands
+          else
+            python scripts/build-islands --changed --base "${{ github.event.before }}"
+          fi
 
       - name: Point the shell at the server
         if: vars.SERVER_URL != ''
