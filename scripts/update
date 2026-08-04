@@ -6,8 +6,10 @@
 Claude runs this when you say "update". It pulls in everyone else's islands and
 any fixes to the template.
 
-It will refuse to run if you have unshared work, so you can't lose anything —
-say "share my island" first, then "update".
+It will refuse to run if you have work you haven't committed yet — say "share my
+island" first, then "update". Your own island is never overwritten: this merges
+the world's changes into what you already have, and if the two clash it stops
+and changes nothing.
 
 You will rarely need this. Sharing is the thing you do all class.
 """
@@ -50,11 +52,16 @@ def main() -> int:
         print(fetch.stderr.strip()[:300])
         return 1
 
+    # Merge, never reset. A reset would point this branch at main and throw away
+    # everything the student has committed but not had merged in yet.
     before = git("rev-parse", "HEAD").stdout.strip()
-    reset = git("reset", "--hard", "origin/main")
-    if reset.returncode != 0:
-        print("😅 Couldn't update. Ask your teacher.")
-        print(reset.stderr.strip()[:300])
+    merge = git("merge", "--no-edit", "origin/main")
+    if merge.returncode != 0:
+        git("merge", "--abort")
+        print("\n😅 The update clashed with your own work, so nothing changed —")
+        print("   your island is exactly as you left it.")
+        print("   Ask your teacher to sort it out.")
+        print(merge.stdout.strip()[:300])
         return 1
     after = git("rev-parse", "HEAD").stdout.strip()
 
