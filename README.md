@@ -1,3 +1,37 @@
+## Set up instructions for Mr B, Mr O + KB! 
+
+Your island id is `mr-o`, `kb` or `mr-b` — that signifies your branch and your folder.
+
+1. Install Python 3.11+, Git and Claude Code, and sign in to Claude Code. You can
+   use the Claude Code terminal or the Claude Code plugin in PyCharm / VS Code /
+   the editor of your choice.
+
+2. Clone and set up:
+
+   ```bash
+   gh repo clone aaliahabib/islands-world
+   cd islands-world
+   python3 scripts/setup --student mr-o   # or mr-b, or kb
+   cd islands/mr-o
+   .venv/bin/python main.py # to run your game
+   ```
+
+3. Navigate to your island's folder and work with Claude to make changes.
+
+   You're testing a guardrailed version of Claude: some of the "grilling"
+   structure is built in, along with some support around version control and a
+   few restrictions on which parts of the codebase it can edit. If you want to
+   remove the guardrails, say **"remove all guardrails"**. If you want to look at
+   or change how the guardrails are built, read and edit `CLAUDE.md` at the repo
+   root. The guardrails are not at all set in stone and what I would most like feedback on!
+
+4. You'll need write access to the repo before you can push your island's
+   changes: email me your GitHub username and I'll give you those permissions.
+   Once you've pushed you'll have to email me again to trigger the merge and deployment.
+   The code is deployed to https://aaliahabib.github.io/islands-world/. 
+
+---
+
 # Islands World
 
 A browser world made of islands. Each island is one student's pygame game.
