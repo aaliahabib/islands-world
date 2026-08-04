@@ -42,7 +42,7 @@ LINE_COLOR = (255, 255, 255)     # everything is drawn as lines in this colour
 LINE_WIDTH = 2
 FONT_NAME = None                 # None = pygame's built-in font
 
-MUSIC_FILE = "annod-kuntryboy.mp3"   # background music, loops the whole game
+MUSIC_FILE = "death-duel.mp3"        # background music, loops the whole game
 MUSIC_VOLUME = 0.5                   # 0.0 (silent) to 1.0 (full volume)
 
 SHIP_SIZE = 22                   # how big the ship is
@@ -50,6 +50,7 @@ SHIP_THRUST = 340                # how hard the engine pushes
 SHIP_MAX_SPEED = 430             # top speed
 SHIP_DRAG = 0.45                 # how fast you coast to a stop (0 = never)
 SHIP_INVULN_TIME = 2.0           # seconds of blinking safety after respawning
+FREEZE_COLOR = (60, 140, 255)    # colour the ship turns while frozen
 
 BULLET_SPEED = 560
 BULLET_LIFETIME = 0.85           # seconds before a bullet fizzles out
@@ -76,6 +77,17 @@ RAINBOW_COLORS = [
     (130, 0, 255),    # violet
     (255, 0, 200),    # pink
 ]
+
+# The enemy asteroid: solid white, doesn't split, shoots chunks at you.
+ENEMY_COUNT_MIN = 2
+ENEMY_COUNT_MAX = 3               # how many spawn at the start of the game
+ENEMY_RADIUS = SHIP_SIZE * 2      # twice your ship's size
+ENEMY_SPEED = UNICORN_SPEED[3]    # drifts at the same speed as a big rock
+ENEMY_POINTS = 150                # points for shooting one down
+ENEMY_FIRE_INTERVAL = 3.0         # seconds between shots, per enemy
+ENEMY_SHOT_SPEED = 380            # how fast a broken-off chunk flies at you
+ENEMY_SHOT_LIFETIME = 2.5         # seconds before a chunk fizzles out
+ENEMY_FREEZE_TIME = 1.0           # seconds you're frozen after a chunk hits you
 
 FPS = 60
 
@@ -136,8 +148,21 @@ class Ship:
         self.thrusting = False
         self.invuln = SHIP_INVULN_TIME
         self.radius = SHIP_SIZE * 0.7
+        self.frozen = 0.0
+
+    def freeze(self, seconds):
+        self.frozen = seconds
+        self.vx = 0.0
+        self.vy = 0.0
 
     def update(self, dt, keys):
+        self.invuln = max(0.0, self.invuln - dt)
+        if self.frozen > 0:
+            # Held completely in place — no input, no drifting.
+            self.frozen = max(0.0, self.frozen - dt)
+            self.thrusting = False
+            return
+
         dx = 0
         dy = 0
         if keys[pygame.K_LEFT] or keys[pygame.K_a]:
@@ -169,7 +194,6 @@ class Ship:
             self.vy = self.vy / speed * SHIP_MAX_SPEED
 
         self.x, self.y = wrap(self.x + self.vx * dt, self.y + self.vy * dt)
-        self.invuln = max(0.0, self.invuln - dt)
 
     def points(self, shape, scale=SHIP_SIZE):
         radians = math.radians(self.angle)
@@ -186,9 +210,10 @@ class Ship:
         # Blink while invulnerable so you can tell you're safe.
         if self.invuln > 0 and int(time_alive * 12) % 2 == 0:
             return
-        draw_shape(surface, self.points(self.SHAPE))
+        color = FREEZE_COLOR if self.frozen > 0 else None
+        draw_shape(surface, self.points(self.SHAPE), color=color)
         if self.thrusting and random.random() < 0.7:
-            draw_shape(surface, self.points(self.FLAME))
+            draw_shape(surface, self.points(self.FLAME), color=color)
 
     def nose(self):
         radians = math.radians(self.angle)
@@ -275,6 +300,93 @@ class Unicorn:
         return [Unicorn(self.x, self.y, self.size - 1) for _ in range(UNICORN_SPLIT_COUNT)]
 
 
+class EnemyAsteroid:
+    """A solid, filled-in asteroid that shoots chunks of itself at you."""
+
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+        self.radius = ENEMY_RADIUS
+
+        angle = random.uniform(0, math.tau)
+        speed = ENEMY_SPEED * random.uniform(0.7, 1.3)
+        self.vx = math.cos(angle) * speed
+        self.vy = math.sin(angle) * speed
+        self.spin = random.uniform(-40, 40)
+        self.angle = random.uniform(0, 360)
+        self.fire_timer = random.uniform(0.5, ENEMY_FIRE_INTERVAL)   # stagger shots
+
+        # A lumpy circle, same idea as a rock — but this one gets filled in.
+        corners = random.randint(9, 12)
+        self.shape = []
+        for i in range(corners):
+            theta = math.tau * i / corners
+            jitter = random.uniform(0.78, 1.1)
+            if random.random() < 0.25:
+                jitter = random.uniform(0.42, 0.58)
+            self.shape.append((math.cos(theta) * jitter, math.sin(theta) * jitter))
+
+    def update(self, dt):
+        self.x, self.y = wrap(self.x + self.vx * dt, self.y + self.vy * dt)
+        self.angle += self.spin * dt
+        self.fire_timer -= dt
+
+    def points(self):
+        radians = math.radians(self.angle)
+        cos_a, sin_a = math.cos(radians), math.sin(radians)
+        return [
+            (
+                self.x + (px * cos_a - py * sin_a) * self.radius,
+                self.y + (px * sin_a + py * cos_a) * self.radius,
+            )
+            for px, py in self.shape
+        ]
+
+    def draw(self, surface):
+        pygame.draw.polygon(surface, LINE_COLOR, self.points())
+
+    def ready_to_fire(self):
+        return self.fire_timer <= 0
+
+    def fire_at(self, target_x, target_y):
+        self.fire_timer = ENEMY_FIRE_INTERVAL
+        return EnemyShot(self.x, self.y, target_x, target_y)
+
+
+class EnemyShot:
+    """A chunk that breaks off an enemy asteroid and flies at the player."""
+
+    SHAPE = [(0.9, 0.1), (0.3, 0.9), (-0.7, 0.6), (-0.9, -0.4), (0.1, -0.9)]
+
+    def __init__(self, x, y, target_x, target_y):
+        self.x = x
+        self.y = y
+        angle = math.atan2(target_y - y, target_x - x)
+        self.vx = math.cos(angle) * ENEMY_SHOT_SPEED
+        self.vy = math.sin(angle) * ENEMY_SHOT_SPEED
+        self.life = ENEMY_SHOT_LIFETIME
+        self.radius = 6
+        self.spin = random.uniform(-200, 200)
+        self.angle = random.uniform(0, 360)
+
+    def update(self, dt):
+        self.x, self.y = wrap(self.x + self.vx * dt, self.y + self.vy * dt)
+        self.angle += self.spin * dt
+        self.life -= dt
+
+    def draw(self, surface):
+        radians = math.radians(self.angle)
+        cos_a, sin_a = math.cos(radians), math.sin(radians)
+        points = [
+            (
+                self.x + (px * cos_a - py * sin_a) * self.radius,
+                self.y + (px * sin_a + py * cos_a) * self.radius,
+            )
+            for px, py in self.SHAPE
+        ]
+        pygame.draw.polygon(surface, LINE_COLOR, points)
+
+
 class Debris:
     """A little burst of lines when something is destroyed."""
 
@@ -319,6 +431,8 @@ class Game:
         self.ship = Ship()
         self.bullets = []
         self.unicorns = []
+        self.enemies = []
+        self.enemy_shots = []
         self.debris = []
         self.score = 0
         self.lives = STARTING_LIVES
@@ -329,6 +443,18 @@ class Game:
         reset_score()
         submit_score(0)
         self.next_wave()
+        self.spawn_enemies()
+
+    def spawn_enemies(self):
+        count = random.randint(ENEMY_COUNT_MIN, ENEMY_COUNT_MAX)
+        for _ in range(count):
+            # Spawn away from the middle so enemies don't appear on top of the ship.
+            while True:
+                x = random.uniform(0, WIDTH)
+                y = random.uniform(0, HEIGHT)
+                if math.hypot(x - WIDTH / 2, y - HEIGHT / 2) > 180:
+                    break
+            self.enemies.append(EnemyAsteroid(x, y))
 
     def next_wave(self):
         self.wave += 1
@@ -382,6 +508,15 @@ class Game:
         for unicorn in self.unicorns:
             unicorn.update(dt)
 
+        for enemy in self.enemies:
+            enemy.update(dt)
+            if enemy.ready_to_fire():
+                self.enemy_shots.append(enemy.fire_at(self.ship.x, self.ship.y))
+
+        for shot in self.enemy_shots:
+            shot.update(dt)
+        self.enemy_shots = [s for s in self.enemy_shots if s.life > 0]
+
         for burst in self.debris:
             burst.update(dt)
         self.debris = [d for d in self.debris if d.life > 0]
@@ -403,12 +538,43 @@ class Game:
             surviving_unicorns.extend(unicorn.split())
         self.unicorns = surviving_unicorns
 
-        # Unicorns vs ship.
+        # Bullets vs enemy asteroids.
+        surviving_enemies = []
+        for enemy in self.enemies:
+            hit_by = None
+            for bullet in self.bullets:
+                if collides(enemy, bullet):
+                    hit_by = bullet
+                    break
+            if hit_by is None:
+                surviving_enemies.append(enemy)
+                continue
+            self.bullets.remove(hit_by)
+            self.add_score(ENEMY_POINTS)
+            self.debris.append(Debris(enemy.x, enemy.y))
+        self.enemies = surviving_enemies
+
+        # Unicorns and enemy asteroids vs ship.
         if self.ship.invuln <= 0:
             for unicorn in self.unicorns:
                 if collides(unicorn, self.ship):
                     self.lose_a_life()
                     break
+            else:
+                for enemy in self.enemies:
+                    if collides(enemy, self.ship):
+                        self.lose_a_life()
+                        break
+
+        # Enemy chunks vs ship — freezes you in place, no life lost.
+        if self.ship.invuln <= 0:
+            surviving_shots = []
+            for shot in self.enemy_shots:
+                if collides(shot, self.ship):
+                    self.ship.freeze(ENEMY_FREEZE_TIME)
+                else:
+                    surviving_shots.append(shot)
+            self.enemy_shots = surviving_shots
 
         if not self.unicorns:
             self.next_wave()
@@ -418,6 +584,10 @@ class Game:
 
         for unicorn in self.unicorns:
             unicorn.draw(surface)
+        for enemy in self.enemies:
+            enemy.draw(surface)
+        for shot in self.enemy_shots:
+            shot.draw(surface)
         for bullet in self.bullets:
             bullet.draw(surface)
         for burst in self.debris:
