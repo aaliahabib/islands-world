@@ -1,15 +1,16 @@
-"""ASTEROIDS — your island's game.
+"""PLATFORM JUMPER — your island's game.
 
-Fly the ship, shoot the rocks, don't get hit. Big rocks split into smaller ones.
+Run and jump across randomly placed platforms.
 
-    LEFT / RIGHT  (or A / D)   turn
-    UP            (or W)       thrust
-    SPACE                      shoot
+    LEFT / RIGHT  (or A / D)   run
+    UP            (or W)       jump
+    DOWN          (or S)       drop through the platform you're standing on
     R                          restart after game over
 
 This is YOUR game now. The fastest way to make it yours is the CUSTOMIZE block
-just below — change the colours, make the ship faster, give yourself 10 lives.
-Then run it and see what happened. After that, ask Claude for bigger changes.
+just below — change the colours, make the player faster, give yourself more
+lives. Then run it and see what happened. After that, ask Claude for bigger
+changes.
 
 Two rules that keep your island working inside Islands World:
   1. keep `async def main()` and the `await asyncio.sleep(0)` at the end of the
@@ -31,59 +32,69 @@ from islands_sdk import game_over, reset as reset_score, submit_score
 #  break the game; the worst that happens is it gets silly.
 # ─────────────────────────────────────────────────────────────────────────────
 
-TITLE = "Asteroid Island"
+TITLE = "Platform Jumper"
 
 WIDTH = 900                      # size of the game window
 HEIGHT = 700
 
-BACKGROUND = (0, 0, 0)           # colours are (RED, GREEN, BLUE), 0–255
-LINE_COLOR = (255, 255, 255)     # everything is drawn as lines in this colour
-LINE_WIDTH = 2
+BACKGROUND = (12, 12, 32)
+FLOOR_COLOR = (90, 65, 45)
+PLATFORM_COLOR = (120, 95, 65)
+PLAYER_COLOR = (255, 210, 70)
+LINE_COLOR = (255, 255, 255)
 FONT_NAME = None                 # None = pygame's built-in font
 
-SHIP_SIZE = 22                   # how big the ship is
-SHIP_TURN_SPEED = 220            # degrees per second
-SHIP_THRUST = 340                # how hard the engine pushes
-SHIP_MAX_SPEED = 430             # top speed
-SHIP_DRAG = 0.45                 # how fast you coast to a stop (0 = never)
-SHIP_INVULN_TIME = 2.0           # seconds of blinking safety after respawning
-
-BULLET_SPEED = 560
-BULLET_LIFETIME = 0.85           # seconds before a bullet fizzles out
-BULLET_COOLDOWN = 0.20           # seconds between shots
-MAX_BULLETS = 5
+PLAYER_WIDTH = 28
+PLAYER_HEIGHT = 40
+RUN_SPEED = 280                  # how fast you run left/right
+JUMP_SPEED = 780                 # how hard you push off when you jump
+GRAVITY = 1500                   # how fast you fall back down
 
 STARTING_LIVES = 3
-STARTING_ROCKS = 4               # rocks in wave 1; each wave adds one more
 
-# Rocks come in 3 sizes. size 3 = big, 2 = medium, 1 = small.
-ROCK_RADIUS = {3: 54, 2: 30, 1: 16}
-ROCK_SPEED = {3: 55, 2: 90, 1: 140}
-ROCK_POINTS = {3: 20, 2: 50, 1: 100}   # points for shooting one
-ROCK_SPLIT_COUNT = 2                   # how many pieces a rock breaks into
+FLOOR_HEIGHT = 40                # how tall the floor strip is
+
+PLATFORM_ROWS = 4                # how many tiers of platforms above the floor
+PLATFORMS_PER_ROW = (2, 3)       # min/max platforms in each tier
+PLATFORM_WIDTH = (90, 160)       # min/max width of a platform
+PLATFORM_THICKNESS = 18
+ROW_GAP = 150                    # vertical space between tiers — must stay
+                                  # smaller than how high you can jump!
+RESERVED_WIDTH = 160             # a column on the right kept clear for the
+                                  # bonus platform, so nothing else blocks it
+
+ENEMY_SIZE = 26
+ENEMY_COUNT = 4                  # how many enemies spawn each level
+ENEMY_WANDER_SPEED = 60
+ENEMY_CHASE_SPEED = 150
+CHASE_RADIUS = 200               # how close you need to be before they chase
+ENEMY_COLOR = (210, 60, 60)
+ENEMY_VULNERABLE_COLOR = (90, 140, 255)   # colour while you can eat them
+
+TOKEN_SIZE = 20
+TOKEN_COLOR = (255, 255, 120)
+TOKEN_POINTS = 10                # points for a regular token
+POWER_TOKEN_COLOR = (110, 200, 255)
+POWER_DURATION = 6.0             # seconds you can eat enemies for
+BIGJUMP_TOKEN_COLOR = (255, 170, 60)
+BIG_JUMP_MULTIPLIER = 1.35       # how much higher you jump once you have it
+
+ENEMY_EAT_POINTS = 25            # points for eating a captured enemy
+PLATFORM_POINTS = 10             # points the first time you jump to a platform
+LEVEL_CLEAR_SCORE = 100          # points needed (this level) before a new one loads
+
+BONUS_PLATFORM_COLOR = (200, 140, 255)
+BONUS_WIDTH = 140
+BONUS_GAP = 300                  # height above the floor — too high for a
+                                  # normal jump, reachable with the big jump
+
+PLAYER_INVULN_TIME = 1.2         # seconds of blinking safety after a hit
 
 FPS = 60
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Helpers
 # ─────────────────────────────────────────────────────────────────────────────
-
-
-def wrap(x, y):
-    """The screen has no edges — fly off one side, come back on the other."""
-    return x % WIDTH, y % HEIGHT
-
-
-def draw_shape(surface, points, color=None, width=None):
-    """Draw a closed outline through `points`."""
-    pygame.draw.lines(
-        surface,
-        color or LINE_COLOR,
-        True,
-        points,
-        width or LINE_WIDTH,
-    )
-
 
 _fonts = {}
 
@@ -104,168 +115,158 @@ def draw_text(surface, text, pos, size=24, color=None, align="left"):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class Ship:
-    # The ship outline, drawn nose-first. Change these to reshape your ship.
-    SHAPE = [(1.0, 0.0), (-0.7, 0.65), (-0.4, 0.0), (-0.7, -0.65)]
-    FLAME = [(-0.45, 0.28), (-1.15, 0.0), (-0.45, -0.28)]
+class Platform:
+    def __init__(self, x, y, width, height, is_bonus=False):
+        self.rect = pygame.Rect(x, y, width, height)
+        self.is_bonus = is_bonus
+        self.scored = False
 
-    def __init__(self):
-        self.reset()
+    def draw(self, surface):
+        color = BONUS_PLATFORM_COLOR if self.is_bonus else PLATFORM_COLOR
+        pygame.draw.rect(surface, color, self.rect)
+        pygame.draw.rect(surface, LINE_COLOR, self.rect, 2)
 
-    def reset(self):
-        self.x = WIDTH / 2
-        self.y = HEIGHT / 2
+
+class Token:
+    def __init__(self, x, y, kind):
+        self.x = x
+        self.y = y
+        self.kind = kind  # "power" or "bigjump"
+
+    def rect(self):
+        return pygame.Rect(self.x - TOKEN_SIZE / 2, self.y - TOKEN_SIZE / 2, TOKEN_SIZE, TOKEN_SIZE)
+
+    def draw(self, surface):
+        color = {"point": TOKEN_COLOR, "power": POWER_TOKEN_COLOR, "bigjump": BIGJUMP_TOKEN_COLOR}[self.kind]
+        pygame.draw.circle(surface, color, (int(self.x), int(self.y)), TOKEN_SIZE // 2)
+        pygame.draw.circle(surface, LINE_COLOR, (int(self.x), int(self.y)), TOKEN_SIZE // 2, 2)
+
+
+class Enemy:
+    def __init__(self, platform):
+        self.platform = platform
+        self.x = platform.rect.centerx - ENEMY_SIZE / 2
+        self.y = platform.rect.top - ENEMY_SIZE
+        self.direction = random.choice((-1, 1))
+
+    def rect(self):
+        return pygame.Rect(self.x, self.y, ENEMY_SIZE, ENEMY_SIZE)
+
+    def update(self, dt, player):
+        left = self.platform.rect.left
+        right = self.platform.rect.right - ENEMY_SIZE
+
+        player_cx = player.x + PLAYER_WIDTH / 2
+        player_cy = player.y + PLAYER_HEIGHT / 2
+        my_cx = self.x + ENEMY_SIZE / 2
+        my_cy = self.y + ENEMY_SIZE / 2
+        near = math.hypot(player_cx - my_cx, player_cy - my_cy) < CHASE_RADIUS
+
+        if near:
+            self.direction = 1 if player_cx > my_cx else -1
+            speed = ENEMY_CHASE_SPEED
+        else:
+            speed = ENEMY_WANDER_SPEED
+            if random.random() < 0.5 * dt:
+                self.direction *= -1
+
+        self.x += self.direction * speed * dt
+        if self.x <= left:
+            self.x, self.direction = left, 1
+        elif self.x >= right:
+            self.x, self.direction = right, -1
+
+    def draw(self, surface, vulnerable):
+        color = ENEMY_VULNERABLE_COLOR if vulnerable else ENEMY_COLOR
+        pygame.draw.rect(surface, color, self.rect())
+        pygame.draw.rect(surface, LINE_COLOR, self.rect(), 2)
+
+
+class Player:
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
         self.vx = 0.0
         self.vy = 0.0
-        self.angle = -90.0          # pointing up
-        self.thrusting = False
-        self.invuln = SHIP_INVULN_TIME
-        self.radius = SHIP_SIZE * 0.7
+        self.on_ground = False
+        self.drop_timer = 0.0
+        self.facing = 1
+        self.power_timer = 0.0
+        self.big_jump_active = False
+        self.invuln = 0.0
+        self.standing_on = None
 
-    def update(self, dt, keys):
-        turning = 0
-        if keys[pygame.K_LEFT] or keys[pygame.K_a]:
-            turning -= 1
-        if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
-            turning += 1
-        self.angle += turning * SHIP_TURN_SPEED * dt
+    def rect(self):
+        return pygame.Rect(self.x, self.y, PLAYER_WIDTH, PLAYER_HEIGHT)
 
-        self.thrusting = keys[pygame.K_UP] or keys[pygame.K_w]
-        if self.thrusting:
-            radians = math.radians(self.angle)
-            self.vx += math.cos(radians) * SHIP_THRUST * dt
-            self.vy += math.sin(radians) * SHIP_THRUST * dt
-
-        # Drag, then speed limit.
-        damping = max(0.0, 1.0 - SHIP_DRAG * dt)
-        self.vx *= damping
-        self.vy *= damping
-        speed = math.hypot(self.vx, self.vy)
-        if speed > SHIP_MAX_SPEED:
-            self.vx = self.vx / speed * SHIP_MAX_SPEED
-            self.vy = self.vy / speed * SHIP_MAX_SPEED
-
-        self.x, self.y = wrap(self.x + self.vx * dt, self.y + self.vy * dt)
+    def update(self, dt, keys, platforms, floor_rect):
+        self.power_timer = max(0.0, self.power_timer - dt)
         self.invuln = max(0.0, self.invuln - dt)
 
-    def points(self, shape, scale=SHIP_SIZE):
-        radians = math.radians(self.angle)
-        cos_a, sin_a = math.cos(radians), math.sin(radians)
-        return [
-            (
-                self.x + (px * cos_a - py * sin_a) * scale,
-                self.y + (px * sin_a + py * cos_a) * scale,
-            )
-            for px, py in shape
-        ]
+        moving = 0
+        if keys[pygame.K_LEFT] or keys[pygame.K_a]:
+            moving -= 1
+        if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
+            moving += 1
+        if moving:
+            self.facing = moving
+        self.vx = moving * RUN_SPEED
 
-    def draw(self, surface, time_alive):
-        # Blink while invulnerable so you can tell you're safe.
-        if self.invuln > 0 and int(time_alive * 12) % 2 == 0:
+        jump_pressed = keys[pygame.K_UP] or keys[pygame.K_w]
+        if jump_pressed and self.on_ground:
+            jump_speed = JUMP_SPEED * (BIG_JUMP_MULTIPLIER if self.big_jump_active else 1.0)
+            self.vy = -jump_speed
+            self.on_ground = False
+
+        drop_pressed = keys[pygame.K_DOWN] or keys[pygame.K_s]
+        if drop_pressed and self.on_ground and self.y + PLAYER_HEIGHT < floor_rect.top:
+            self.drop_timer = 0.25
+            self.on_ground = False
+
+        self.drop_timer = max(0.0, self.drop_timer - dt)
+
+        old_bottom = self.y + PLAYER_HEIGHT
+        self.vy += GRAVITY * dt
+        self.x = max(0, min(WIDTH - PLAYER_WIDTH, self.x + self.vx * dt))
+        self.y += self.vy * dt
+        new_bottom = self.y + PLAYER_HEIGHT
+
+        self.on_ground = False
+        self.standing_on = None
+
+        if self.vy >= 0:
+            if (
+                old_bottom <= floor_rect.top <= new_bottom
+                and self.x + PLAYER_WIDTH > floor_rect.left
+                and self.x < floor_rect.right
+            ):
+                self.y = floor_rect.top - PLAYER_HEIGHT
+                self.vy = 0
+                self.on_ground = True
+            elif self.drop_timer <= 0:
+                for platform in platforms:
+                    prect = platform.rect
+                    if (
+                        old_bottom <= prect.top <= new_bottom
+                        and self.x + PLAYER_WIDTH > prect.left
+                        and self.x < prect.right
+                    ):
+                        self.y = prect.top - PLAYER_HEIGHT
+                        self.vy = 0
+                        self.on_ground = True
+                        self.standing_on = platform
+                        break
+
+    def draw(self, surface):
+        if self.invuln > 0 and int(self.invuln * 12) % 2 == 0:
             return
-        draw_shape(surface, self.points(self.SHAPE))
-        if self.thrusting and random.random() < 0.7:
-            draw_shape(surface, self.points(self.FLAME))
-
-    def nose(self):
-        radians = math.radians(self.angle)
-        return (
-            self.x + math.cos(radians) * SHIP_SIZE,
-            self.y + math.sin(radians) * SHIP_SIZE,
-        )
-
-
-class Bullet:
-    def __init__(self, x, y, angle):
-        radians = math.radians(angle)
-        self.x = x
-        self.y = y
-        self.vx = math.cos(radians) * BULLET_SPEED
-        self.vy = math.sin(radians) * BULLET_SPEED
-        self.life = BULLET_LIFETIME
-        self.radius = 2
-
-    def update(self, dt):
-        self.x, self.y = wrap(self.x + self.vx * dt, self.y + self.vy * dt)
-        self.life -= dt
-
-    def draw(self, surface):
-        pygame.draw.rect(surface, LINE_COLOR, (self.x - 1.5, self.y - 1.5, 3, 3), 0)
-
-
-class Rock:
-    def __init__(self, x, y, size):
-        self.x = x
-        self.y = y
-        self.size = size
-        self.radius = ROCK_RADIUS[size]
-
-        angle = random.uniform(0, math.tau)
-        speed = ROCK_SPEED[size] * random.uniform(0.7, 1.3)
-        self.vx = math.cos(angle) * speed
-        self.vy = math.sin(angle) * speed
-        self.spin = random.uniform(-60, 60)
-        self.angle = random.uniform(0, 360)
-
-        # A lumpy circle with a few deep notches — this is what makes rocks look
-        # like rocks instead of like blobs.
-        corners = random.randint(9, 12)
-        self.shape = []
-        for i in range(corners):
-            theta = math.tau * i / corners
-            jitter = random.uniform(0.78, 1.1)
-            if random.random() < 0.25:
-                jitter = random.uniform(0.42, 0.58)   # a chunk taken out
-            self.shape.append((math.cos(theta) * jitter, math.sin(theta) * jitter))
-
-    def update(self, dt):
-        self.x, self.y = wrap(self.x + self.vx * dt, self.y + self.vy * dt)
-        self.angle += self.spin * dt
-
-    def draw(self, surface):
-        radians = math.radians(self.angle)
-        cos_a, sin_a = math.cos(radians), math.sin(radians)
-        points = [
-            (
-                self.x + (px * cos_a - py * sin_a) * self.radius,
-                self.y + (px * sin_a + py * cos_a) * self.radius,
-            )
-            for px, py in self.shape
-        ]
-        draw_shape(surface, points)
-
-    def split(self):
-        """Break into smaller rocks. Smallest rocks just vanish."""
-        if self.size <= 1:
-            return []
-        return [Rock(self.x, self.y, self.size - 1) for _ in range(ROCK_SPLIT_COUNT)]
-
-
-class Debris:
-    """A little burst of lines when something is destroyed."""
-
-    def __init__(self, x, y, count=8):
-        self.pieces = []
-        for _ in range(count):
-            angle = random.uniform(0, math.tau)
-            speed = random.uniform(40, 170)
-            self.pieces.append(
-                [x, y, math.cos(angle) * speed, math.sin(angle) * speed]
-            )
-        self.life = 0.6
-
-    def update(self, dt):
-        for piece in self.pieces:
-            piece[0] += piece[2] * dt
-            piece[1] += piece[3] * dt
-        self.life -= dt
-
-    def draw(self, surface):
-        for x, y, vx, vy in self.pieces:
-            scale = 0.03
-            pygame.draw.line(
-                surface, LINE_COLOR, (x, y), (x - vx * scale, y - vy * scale), 1
-            )
+        color = PLAYER_COLOR
+        if self.power_timer > 0:
+            color = POWER_TOKEN_COLOR
+        elif self.big_jump_active:
+            color = BIGJUMP_TOKEN_COLOR
+        pygame.draw.rect(surface, color, self.rect())
+        pygame.draw.rect(surface, LINE_COLOR, self.rect(), 2)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -273,8 +274,45 @@ class Debris:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def collides(a, b):
-    return math.hypot(a.x - b.x, a.y - b.y) < a.radius + b.radius
+def make_platforms():
+    """Random tiers of platforms above the floor, low enough to jump to, plus
+    one bonus platform in its own clear column that only a big jump can reach."""
+    platforms = []
+    floor_top = HEIGHT - FLOOR_HEIGHT
+    usable_width = WIDTH - RESERVED_WIDTH
+    for row in range(1, PLATFORM_ROWS + 1):
+        y = floor_top - ROW_GAP * row
+        count = random.randint(*PLATFORMS_PER_ROW)
+        slot_width = usable_width / count
+        for i in range(count):
+            width = min(random.uniform(*PLATFORM_WIDTH), slot_width - 20)
+            slot_left = slot_width * i
+            x = random.uniform(slot_left + 10, slot_left + slot_width - width - 10)
+            platforms.append(Platform(x, y - PLATFORM_THICKNESS, width, PLATFORM_THICKNESS))
+
+    bonus_x = random.uniform(usable_width + 10, WIDTH - BONUS_WIDTH - 10)
+    bonus_y = floor_top - BONUS_GAP
+    platforms.append(Platform(bonus_x, bonus_y, BONUS_WIDTH, PLATFORM_THICKNESS, is_bonus=True))
+    return platforms
+
+
+def make_enemies(platforms):
+    regular = [p for p in platforms if not p.is_bonus]
+    chosen = random.sample(regular, min(ENEMY_COUNT, len(regular)))
+    return [Enemy(p) for p in chosen]
+
+
+def make_tokens(platforms):
+    regular = [p for p in platforms if not p.is_bonus]
+    power_platform, bigjump_platform = random.sample(regular, min(2, len(regular)))
+    tokens = [
+        Token(power_platform.rect.centerx, power_platform.rect.top - TOKEN_SIZE, "power"),
+        Token(bigjump_platform.rect.centerx, bigjump_platform.rect.top - TOKEN_SIZE, "bigjump"),
+    ]
+    for platform in regular:
+        if platform is not power_platform and platform is not bigjump_platform:
+            tokens.append(Token(platform.rect.centerx, platform.rect.top - TOKEN_SIZE, "point"))
+    return tokens
 
 
 class Game:
@@ -282,115 +320,92 @@ class Game:
         self.start_new_game()
 
     def start_new_game(self):
-        self.ship = Ship()
-        self.bullets = []
-        self.rocks = []
-        self.debris = []
+        self.floor = pygame.Rect(0, HEIGHT - FLOOR_HEIGHT, WIDTH, FLOOR_HEIGHT)
         self.score = 0
         self.lives = STARTING_LIVES
-        self.wave = 0
-        self.time_alive = 0.0
-        self.fire_timer = 0.0
+        self.level = 1
         self.over = False
         reset_score()
         submit_score(0)
-        self.next_wave()
+        self.start_level()
 
-    def next_wave(self):
-        self.wave += 1
-        count = STARTING_ROCKS + self.wave - 1
-        for _ in range(count):
-            # Spawn away from the middle so rocks don't appear on top of the ship.
-            while True:
-                x = random.uniform(0, WIDTH)
-                y = random.uniform(0, HEIGHT)
-                if math.hypot(x - WIDTH / 2, y - HEIGHT / 2) > 180:
-                    break
-            self.rocks.append(Rock(x, y, 3))
+    def start_level(self):
+        self.platforms = make_platforms()
+        self.enemies = make_enemies(self.platforms)
+        self.tokens = make_tokens(self.platforms)
+        self.player = Player(WIDTH / 2 - PLAYER_WIDTH / 2, self.floor.top - PLAYER_HEIGHT)
+        self.level_progress = 0
 
-    def shoot(self):
-        if self.fire_timer > 0 or len(self.bullets) >= MAX_BULLETS:
-            return
-        nose_x, nose_y = self.ship.nose()
-        self.bullets.append(Bullet(nose_x, nose_y, self.ship.angle))
-        self.fire_timer = BULLET_COOLDOWN
+    def next_level(self):
+        self.level += 1
+        self.start_level()
 
     def add_score(self, points):
         self.score += points
+        self.level_progress += points
         submit_score(self.score)
 
-    def lose_a_life(self):
-        self.debris.append(Debris(self.ship.x, self.ship.y, 12))
+    def lose_life(self):
         self.lives -= 1
         if self.lives <= 0:
             self.over = True
             game_over(self.score)
         else:
-            self.ship.reset()
+            self.player.x = WIDTH / 2 - PLAYER_WIDTH / 2
+            self.player.y = self.floor.top - PLAYER_HEIGHT
+            self.player.vx = 0
+            self.player.vy = 0
+            self.player.power_timer = 0.0
+            self.player.big_jump_active = False
+            self.player.invuln = PLAYER_INVULN_TIME
 
     def update(self, dt, keys):
-        self.time_alive += dt
         if self.over:
-            for burst in self.debris:
-                burst.update(dt)
-            self.debris = [d for d in self.debris if d.life > 0]
             return
+        self.player.update(dt, keys, self.platforms, self.floor)
 
-        self.fire_timer = max(0.0, self.fire_timer - dt)
-        self.ship.update(dt, keys)
-        if keys[pygame.K_SPACE]:
-            self.shoot()
+        if self.player.standing_on is not None and not self.player.standing_on.scored:
+            self.player.standing_on.scored = True
+            self.add_score(PLATFORM_POINTS)
 
-        for bullet in self.bullets:
-            bullet.update(dt)
-        self.bullets = [b for b in self.bullets if b.life > 0]
+        for enemy in self.enemies:
+            enemy.update(dt, self.player)
 
-        for rock in self.rocks:
-            rock.update(dt)
+        player_rect = self.player.rect()
 
-        for burst in self.debris:
-            burst.update(dt)
-        self.debris = [d for d in self.debris if d.life > 0]
+        for token in self.tokens[:]:
+            if player_rect.colliderect(token.rect()):
+                if token.kind == "power":
+                    self.player.power_timer = POWER_DURATION
+                elif token.kind == "bigjump":
+                    self.player.big_jump_active = True
+                else:
+                    self.add_score(TOKEN_POINTS)
+                self.tokens.remove(token)
 
-        # Bullets vs rocks.
-        surviving_rocks = []
-        for rock in self.rocks:
-            hit_by = None
-            for bullet in self.bullets:
-                if collides(rock, bullet):
-                    hit_by = bullet
-                    break
-            if hit_by is None:
-                surviving_rocks.append(rock)
-                continue
-            self.bullets.remove(hit_by)
-            self.add_score(ROCK_POINTS[rock.size])
-            self.debris.append(Debris(rock.x, rock.y))
-            surviving_rocks.extend(rock.split())
-        self.rocks = surviving_rocks
-
-        # Rocks vs ship.
-        if self.ship.invuln <= 0:
-            for rock in self.rocks:
-                if collides(rock, self.ship):
-                    self.lose_a_life()
+        if self.player.invuln <= 0:
+            for enemy in self.enemies[:]:
+                if player_rect.colliderect(enemy.rect()):
+                    if self.player.power_timer > 0:
+                        self.enemies.remove(enemy)
+                        self.add_score(ENEMY_EAT_POINTS)
+                    else:
+                        self.lose_life()
                     break
 
-        if not self.rocks:
-            self.next_wave()
+        if not self.over and self.level_progress >= LEVEL_CLEAR_SCORE:
+            self.next_level()
 
     def draw(self, surface):
         surface.fill(BACKGROUND)
-
-        for rock in self.rocks:
-            rock.draw(surface)
-        for bullet in self.bullets:
-            bullet.draw(surface)
-        for burst in self.debris:
-            burst.draw(surface)
-        if not self.over:
-            self.ship.draw(surface, self.time_alive)
-
+        pygame.draw.rect(surface, FLOOR_COLOR, self.floor)
+        for platform in self.platforms:
+            platform.draw(surface)
+        for token in self.tokens:
+            token.draw(surface)
+        for enemy in self.enemies:
+            enemy.draw(surface, self.player.power_timer > 0)
+        self.player.draw(surface)
         self.draw_hud(surface)
 
         if self.over:
@@ -402,18 +417,14 @@ class Game:
 
     def draw_hud(self, surface):
         draw_text(surface, str(self.score), (28, 22), size=48)
-
-        # Lives, drawn as little ships.
-        for i in range(self.lives):
-            x = 34 + i * 30
-            y = 90
-            points = [
-                (x + (px * 0.0 - py * -1.0) * 11, y + (px * -1.0 + py * 0.0) * 11)
-                for px, py in Ship.SHAPE
-            ]
-            draw_shape(surface, points, width=2)
-
-        draw_text(surface, f"WAVE {self.wave}", (WIDTH - 28, 26), size=24, align="right")
+        draw_text(surface, f"LIVES {self.lives}", (WIDTH - 28, 26), size=24, align="right")
+        draw_text(surface, f"LEVEL {self.level}", (WIDTH - 28, 54), size=20, align="right")
+        if self.player.power_timer > 0:
+            draw_text(surface, "POWER!", (WIDTH / 2, 22), size=24, align="center",
+                      color=POWER_TOKEN_COLOR)
+        elif self.player.big_jump_active:
+            draw_text(surface, "BIG JUMP!", (WIDTH / 2, 22), size=24, align="center",
+                      color=BIGJUMP_TOKEN_COLOR)
 
 
 async def main():
