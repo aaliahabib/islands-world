@@ -382,7 +382,7 @@ boot().catch((error) => {
   console.error("[shell] failed to start", error);
   document.body.innerHTML =
     '<pre style="padding:24px;font:14px ui-monospace,monospace">' +
-    "Islands World failed to start.\n\n" +
+    "Asteroid Island failed to start.\n\n" +
     String(error && error.stack ? error.stack : error) +
     "</pre>";
 });
