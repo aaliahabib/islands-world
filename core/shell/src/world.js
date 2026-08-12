@@ -78,13 +78,48 @@ function maxExtent(points) {
   return m;
 }
 
+/** The one column of a row that's left empty, decided by the seed. */
+function blankColumns(row) {
+  const { slotCols, layoutSeed } = WORLD;
+  // A one-column grid has no room for a gap, and blanking it would leave no
+  // cells at all for islands to sit in.
+  if (slotCols < 2) return new Set();
+  const rand = mulberry32(hashString(`blanks:${layoutSeed}:${row}`));
+  // Exactly one gap per row: enough to break the columns up, without leaving
+  // the map looking half-finished.
+  return new Set([Math.floor(rand() * slotCols)]);
+}
+
+/**
+ * The cells islands actually sit in, in slot order, skipping the blanks.
+ *
+ * Cell n is always the same cell no matter how many islands exist, because the
+ * blanks depend only on the seed and the row number. That's what keeps an
+ * island in the same place when someone joins or leaves.
+ */
+function usableCells(count) {
+  const { slotCols } = WORLD;
+  const cells = [];
+  for (let row = 0; cells.length < count; row++) {
+    const blanks = blankColumns(row);
+    for (let col = 0; col < slotCols && cells.length < count; col++) {
+      if (!blanks.has(col)) cells.push({ col, row });
+    }
+  }
+  return cells;
+}
+
 export function buildIslands(registry) {
-  const { slotCols, slotSpacingX, slotSpacingY, margin, islandRadius } = WORLD;
+  const { slotSpacingX, slotSpacingY, margin, islandRadius } = WORLD;
+
+  const slotOf = (entry, index) =>
+    Number.isInteger(entry.slot) && entry.slot >= 0 ? entry.slot : index;
+  const highestSlot = registry.reduce((max, entry, i) => Math.max(max, slotOf(entry, i)), 0);
+  const cells = usableCells(highestSlot + 1);
 
   return registry.map((entry, index) => {
-    const slot = Number.isInteger(entry.slot) ? entry.slot : index;
-    const col = slot % slotCols;
-    const row = Math.floor(slot / slotCols);
+    const slot = slotOf(entry, index);
+    const { col, row } = cells[slot];
 
     const rand = mulberry32(hashString(entry.id || `island-${slot}`));
     // A stable per-island wobble so the grid doesn't read as a grid.

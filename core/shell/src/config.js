@@ -33,6 +33,10 @@ export const WORLD = {
   slotCols: 4,
   slotSpacingX: 660,
   slotSpacingY: 540,
+  // Some cells in every row are deliberately left empty so the map doesn't
+  // read as a solid grid. Change this to reshuffle which ones — but note it
+  // moves every island, so don't change it mid-session.
+  layoutSeed: 20260804,
   margin: 420,
   islandRadius: 168,
   playerSpeed: 320,
