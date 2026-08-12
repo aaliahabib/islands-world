@@ -1,15 +1,18 @@
-"""ASTEROIDS — your island's game.
+"""BALANCE TREE — your island's game.
 
-Fly the ship, shoot the rocks, don't get hit. Big rocks split into smaller ones.
+Grow a tree by drawing branches. Every branch ends in a heavy coloured disc,
+and the tree topples the moment its weight leans further out than its roots
+can hold.
 
-    LEFT / RIGHT  (or A / D)   turn
-    UP            (or W)       thrust
-    SPACE                      shoot
-    R                          restart after game over
+    DRAG from the trunk or any branch   grow a new branch
+    R                                   start again after it falls
+
+The disc you're about to grow is shown at the end of the branch while you
+drag, so you always know how heavy it will be before you let go.
 
 This is YOUR game now. The fastest way to make it yours is the CUSTOMIZE block
-just below — change the colours, make the ship faster, give yourself 10 lives.
-Then run it and see what happened. After that, ask Claude for bigger changes.
+just below — change the colours, make the trunk heavier, allow bigger discs.
+Then run it and see what happened.
 
 Two rules that keep your island working inside Islands World:
   1. keep `async def main()` and the `await asyncio.sleep(0)` at the end of the
@@ -31,241 +34,368 @@ from islands_sdk import game_over, reset as reset_score, submit_score
 #  break the game; the worst that happens is it gets silly.
 # ─────────────────────────────────────────────────────────────────────────────
 
-TITLE = "Asteroid Island"
+TITLE = "Balance Tree"
 
 WIDTH = 900                      # size of the game window
 HEIGHT = 700
-
-BACKGROUND = (0, 0, 0)           # colours are (RED, GREEN, BLUE), 0–255
-LINE_COLOR = (255, 255, 255)     # everything is drawn as lines in this colour
-LINE_WIDTH = 2
-FONT_NAME = None                 # None = pygame's built-in font
-
-SHIP_SIZE = 22                   # how big the ship is
-SHIP_TURN_SPEED = 220            # degrees per second
-SHIP_THRUST = 340                # how hard the engine pushes
-SHIP_MAX_SPEED = 430             # top speed
-SHIP_DRAG = 0.45                 # how fast you coast to a stop (0 = never)
-SHIP_INVULN_TIME = 2.0           # seconds of blinking safety after respawning
-
-BULLET_SPEED = 560
-BULLET_LIFETIME = 0.85           # seconds before a bullet fizzles out
-BULLET_COOLDOWN = 0.20           # seconds between shots
-MAX_BULLETS = 5
-
-STARTING_LIVES = 3
-STARTING_ROCKS = 4               # rocks in wave 1; each wave adds one more
-
-# Rocks come in 3 sizes. size 3 = big, 2 = medium, 1 = small.
-ROCK_RADIUS = {3: 54, 2: 30, 1: 16}
-ROCK_SPEED = {3: 55, 2: 90, 1: 140}
-ROCK_POINTS = {3: 20, 2: 50, 1: 100}   # points for shooting one
-ROCK_SPLIT_COUNT = 2                   # how many pieces a rock breaks into
-
 FPS = 60
 
+BACKGROUND = (244, 243, 240)     # colours are (RED, GREEN, BLUE), 0–255
+GROUND_COLOR = (60, 58, 54)
+WOOD = (176, 150, 84)            # the gold of the trunk and branches
+PENDING = (220, 212, 186)        # a branch you haven't closed a loop on yet
+WOOD_SPECKLE = (192, 168, 108)   # flecks up the trunk — keep this close to
+TRUNK_SPECKLES = 70              # WOOD, and the count low, or it gets noisy
+
+GROUND_Y = 640                   # how far down the ground line sits
+TRUNK_X = 450                    # the trunk stands here
+TRUNK_TOP_Y = 430                # and reaches up to here
+TRUNK_BASE_HALF = 24             # half its width at the ground
+TRUNK_TOP_HALF = 6               # and at the top
+
+BASE_HALF_WIDTH = 96             # how far the weight can lean before it topples
+TRUNK_MASS = 900                 # the trunk's own weight — the difficulty dial.
+                                 # Bigger = steadier tree = easier game.
+
+BRANCH_WIDTH_START = 9           # branches taper from this…
+BRANCH_WIDTH_END = 3             # …down to this at the tip
+
+GRAB_DISTANCE = 26               # how near a branch you must click to grab it
+MIN_BRANCH_LENGTH = 45           # shorter drags than this are ignored
+
+SHOW_BALANCE = False             # True draws the centre of mass and the safe
+                                 # footprint, which makes the game much easier
+
+# The discs you can grow. Each one is (radius, rings), and the rings are drawn
+# biggest first — (colour, size) where size is a fraction of the radius.
+#
+# They're listed smallest to largest ON PURPOSE: colour tells you weight, so
+# after a few goes you know the little pink one is safe and the big peach one
+# is trouble. Add your own, or change a radius to make a colour heavier.
+DISC_TYPES = [
+    (12, [((240, 180, 154), 1.0), ((122, 84, 66), 0.42)]),
+    (15, [((193, 80, 46), 1.0), ((222, 216, 206), 0.60)]),
+    (17, [((44, 42, 60), 1.0), ((90, 74, 158), 0.62)]),
+    (20, [((36, 34, 40), 1.0), ((205, 95, 122), 0.70), ((30, 28, 26), 0.28)]),
+    (23, [((232, 216, 168), 1.0), ((246, 240, 220), 0.72), ((74, 70, 58), 0.24)]),
+    (26, [((58, 36, 24), 1.0), ((91, 143, 168), 0.80), ((26, 24, 22), 0.34)]),
+    (30, [((193, 80, 46), 1.0), ((222, 216, 206), 0.66), ((26, 24, 22), 0.34)]),
+    (34, [((26, 24, 30), 1.0), ((72, 92, 112), 0.66)]),
+]
+
 # ─────────────────────────────────────────────────────────────────────────────
-#  Helpers
+#  The tree
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def wrap(x, y):
-    """The screen has no edges — fly off one side, come back on the other."""
-    return x % WIDTH, y % HEIGHT
+def curve(start, control_a, control_b, end, steps=30):
+    """A smooth line from start to end, pulled toward two control points.
+
+    This is a cubic Bézier. The two controls are what let a branch change its
+    mind halfway along — bend left, then right, like an S. (With only one
+    control point you get a plain arc that can bend one way and no more.)
+
+    Drag the controls further from the line for a sharper bend, or put them on
+    opposite sides of it for a wiggle. We sample the curve into a list of
+    points so we can draw it as a tapered stroke.
+    """
+    points = []
+    for i in range(steps + 1):
+        t = i / steps
+        u = 1 - t
+        x = (
+            u * u * u * start[0]
+            + 3 * u * u * t * control_a[0]
+            + 3 * u * t * t * control_b[0]
+            + t * t * t * end[0]
+        )
+        y = (
+            u * u * u * start[1]
+            + 3 * u * u * t * control_a[1]
+            + 3 * u * t * t * control_b[1]
+            + t * t * t * end[1]
+        )
+        points.append((x, y))
+    return points
 
 
-def draw_shape(surface, points, color=None, width=None):
-    """Draw a closed outline through `points`."""
-    pygame.draw.lines(
-        surface,
-        color or LINE_COLOR,
-        True,
-        points,
-        width or LINE_WIDTH,
+def s_curve(start, end, bend_a, bend_b, steps=30):
+    """An S-shaped branch from start to end.
+
+    Rather than placing the two control points by hand, this pushes them
+    sideways off the straight line between the ends — `bend_a` a third of the
+    way along, `bend_b` two thirds. Give the two bends OPPOSITE signs and the
+    branch curves one way and then the other, which is the S. Same sign and
+    you get a plain arc; bigger numbers bend harder.
+    """
+    dx = end[0] - start[0]
+    dy = end[1] - start[1]
+    length = math.hypot(dx, dy) or 1.0
+    nx, ny = -dy / length, dx / length  # across the line, not along it
+
+    control_a = (start[0] + dx / 3 + nx * bend_a, start[1] + dy / 3 + ny * bend_a)
+    control_b = (start[0] + dx * 2 / 3 + nx * bend_b, start[1] + dy * 2 / 3 + ny * bend_b)
+    return curve(start, control_a, control_b, end, steps)
+
+
+def closest_point_on_segment(point, a, b):
+    """The point on line segment a→b that sits nearest to `point`."""
+    ax, ay = a
+    dx, dy = b[0] - ax, b[1] - ay
+    length_squared = dx * dx + dy * dy
+    if length_squared == 0:
+        return a
+    # How far along the segment the perpendicular lands, clamped to the ends.
+    t = ((point[0] - ax) * dx + (point[1] - ay) * dy) / length_squared
+    t = max(0.0, min(1.0, t))
+    return (ax + dx * t, ay + dy * t)
+
+
+def path_length(points):
+    return sum(
+        math.dist(points[i], points[i + 1]) for i in range(len(points) - 1)
     )
 
 
-_fonts = {}
+def point_at_fraction(points, fraction):
+    """Walk `fraction` of the way along a path and return the point there."""
+    target = path_length(points) * fraction
+    travelled = 0.0
+    for i in range(len(points) - 1):
+        step = math.dist(points[i], points[i + 1])
+        if travelled + step >= target and step > 0:
+            t = (target - travelled) / step
+            return (
+                points[i][0] + (points[i + 1][0] - points[i][0]) * t,
+                points[i][1] + (points[i + 1][1] - points[i][1]) * t,
+            )
+        travelled += step
+    return points[-1]
 
 
-def draw_text(surface, text, pos, size=24, color=None, align="left"):
-    """Draw some text. `align` is "left", "center" or "right", and `pos` is the
-    top corner (or top middle, if centred)."""
-    if size not in _fonts:
-        _fonts[size] = pygame.font.Font(FONT_NAME, size)
-    image = _fonts[size].render(str(text).upper(), True, color or LINE_COLOR)
-    rect = image.get_rect()
-    setattr(rect, {"left": "topleft", "center": "midtop", "right": "topright"}[align], pos)
-    surface.blit(image, rect)
+def tidy(points, steps=30):
+    """Redraw a hand-drawn line as a smooth branch in the tree's own style.
+
+    We keep where the line starts, where it ends, and how far it bows out to
+    the side at a third and two thirds of the way along. Those two sideways
+    distances are exactly what `s_curve` takes, so a drawn branch is built by
+    the same function as the ones the tree started with — which is why they
+    look like they belong together.
+    """
+    start, end = points[0], points[-1]
+    dx, dy = end[0] - start[0], end[1] - start[1]
+    length = math.hypot(dx, dy)
+    if length < 1:
+        return [start, end]
+    nx, ny = -dy / length, dx / length
+
+    def sideways(fraction):
+        px, py = point_at_fraction(points, fraction)
+        return (px - start[0]) * nx + (py - start[1]) * ny
+
+    first, second = sideways(1 / 3), sideways(2 / 3)
+
+    # A cubic Bézier doesn't pass through its control points, so bending by
+    # `first` at a third of the way along needs a slightly larger push than
+    # `first` itself. This undoes that shrinkage so the curve lands on the
+    # line you actually drew.
+    bend_a = 3 * first - 1.5 * second
+    bend_b = 3 * second - 1.5 * first
+    return s_curve(start, end, bend_a, bend_b, steps)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Things in the game
-# ─────────────────────────────────────────────────────────────────────────────
+class Disc:
+    """A coloured disc at the end of a branch. This is where the weight is.
+
+    Its size comes from its kind, so the colour and the weight always agree.
+    """
+
+    def __init__(self, x, y, kind):
+        self.x = x
+        self.y = y
+        self.radius, self.rings = DISC_TYPES[kind % len(DISC_TYPES)]
+
+    @property
+    def mass(self):
+        """Weight goes up with area, so looping twice as wide is 4x as heavy."""
+        return math.pi * self.radius * self.radius
+
+    def draw(self, surface):
+        for colour, size in self.rings:
+            r = max(1, int(self.radius * size))
+            pygame.draw.circle(surface, colour, (int(self.x), int(self.y)), r)
 
 
-class Ship:
-    # The ship outline, drawn nose-first. Change these to reshape your ship.
-    SHAPE = [(1.0, 0.0), (-0.7, 0.65), (-0.4, 0.0), (-0.7, -0.65)]
-    FLAME = [(-0.45, 0.28), (-1.15, 0.0), (-0.45, -0.28)]
+class Branch:
+    """A drawn stroke of wood, with a disc on the end.
 
+    The path is only ever art — the physics cares about the disc alone, so a
+    long curly branch costs nothing until you loop a disc onto it.
+    """
+
+    def __init__(self, path, disc):
+        self.path = path
+        self.disc = disc
+
+    def draw(self, surface):
+        stroke(surface, self.path, BRANCH_WIDTH_START, BRANCH_WIDTH_END, WOOD)
+
+
+def stroke(surface, points, width_start, width_end, colour):
+    """Draw a list of points as a stroke that tapers from one width to another.
+
+    We walk the line, and at each point step sideways by half the width to
+    build up the left and right edges. Joining those two edges gives a polygon
+    we can fill — which is what makes a branch look drawn rather than wiry.
+    """
+    if len(points) < 2:
+        return
+
+    left, right = [], []
+    for i, (x, y) in enumerate(points):
+        # Which way is the line heading here? Look at the neighbours.
+        prev_point = points[max(i - 1, 0)]
+        next_point = points[min(i + 1, len(points) - 1)]
+        dx = next_point[0] - prev_point[0]
+        dy = next_point[1] - prev_point[1]
+        length = math.hypot(dx, dy) or 1.0
+
+        # The normal is the tangent turned 90°, so it points across the line.
+        nx, ny = -dy / length, dx / length
+
+        t = i / (len(points) - 1)
+        half = (width_start + (width_end - width_start) * t) / 2
+        left.append((x + nx * half, y + ny * half))
+        right.append((x - nx * half, y - ny * half))
+
+    pygame.draw.polygon(surface, colour, left + right[::-1])
+
+
+class Tree:
     def __init__(self):
-        self.reset()
+        self.branches = []
+        self.speckles = []
+        self.build_starting_tree()
 
-    def reset(self):
-        self.x = WIDTH / 2
-        self.y = HEIGHT / 2
-        self.vx = 0.0
-        self.vy = 0.0
-        self.angle = -90.0          # pointing up
-        self.thrusting = False
-        self.invuln = SHIP_INVULN_TIME
-        self.radius = SHIP_SIZE * 0.7
+    def trunk_half_width(self, y):
+        """How wide the trunk is at a given height — wide at the base, thin up top."""
+        t = (y - TRUNK_TOP_Y) / (GROUND_Y - TRUNK_TOP_Y)
+        t = max(0.0, min(1.0, t))
+        return TRUNK_TOP_HALF + (TRUNK_BASE_HALF - TRUNK_TOP_HALF) * t
 
-    def update(self, dt, keys):
-        turning = 0
-        if keys[pygame.K_LEFT] or keys[pygame.K_a]:
-            turning -= 1
-        if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
-            turning += 1
-        self.angle += turning * SHIP_TURN_SPEED * dt
-
-        self.thrusting = keys[pygame.K_UP] or keys[pygame.K_w]
-        if self.thrusting:
-            radians = math.radians(self.angle)
-            self.vx += math.cos(radians) * SHIP_THRUST * dt
-            self.vy += math.sin(radians) * SHIP_THRUST * dt
-
-        # Drag, then speed limit.
-        damping = max(0.0, 1.0 - SHIP_DRAG * dt)
-        self.vx *= damping
-        self.vy *= damping
-        speed = math.hypot(self.vx, self.vy)
-        if speed > SHIP_MAX_SPEED:
-            self.vx = self.vx / speed * SHIP_MAX_SPEED
-            self.vy = self.vy / speed * SHIP_MAX_SPEED
-
-        self.x, self.y = wrap(self.x + self.vx * dt, self.y + self.vy * dt)
-        self.invuln = max(0.0, self.invuln - dt)
-
-    def points(self, shape, scale=SHIP_SIZE):
-        radians = math.radians(self.angle)
-        cos_a, sin_a = math.cos(radians), math.sin(radians)
-        return [
-            (
-                self.x + (px * cos_a - py * sin_a) * scale,
-                self.y + (px * sin_a + py * cos_a) * scale,
-            )
-            for px, py in shape
+    def build_starting_tree(self):
+        """A small version of the tree the game is based on."""
+        # Each branch leaves the trunk one way and arrives at its disc the
+        # other — that's the S. Flip the sign of either bend to mirror it.
+        self.branches = [
+            Branch(s_curve((TRUNK_X, 545), (344, 508), 30, -30), Disc(344, 508, 5)),
+            Branch(s_curve((TRUNK_X, 508), (578, 472), 34, -34), Disc(578, 472, 6)),
+            Branch(s_curve((TRUNK_X, 470), (376, 424), 24, -24), Disc(376, 424, 3)),
+            Branch(s_curve((TRUNK_X, 434), (466, 392), 18, -18), Disc(466, 392, 1)),
         ]
 
-    def draw(self, surface, time_alive):
-        # Blink while invulnerable so you can tell you're safe.
-        if self.invuln > 0 and int(time_alive * 12) % 2 == 0:
-            return
-        draw_shape(surface, self.points(self.SHAPE))
-        if self.thrusting and random.random() < 0.7:
-            draw_shape(surface, self.points(self.FLAME))
+        # Flecks on the trunk. Seeded, so the tree looks the same every run.
+        rng = random.Random(7)
+        self.speckles = []
+        for _ in range(TRUNK_SPECKLES):
+            y = rng.uniform(TRUNK_TOP_Y, GROUND_Y)
+            half = self.trunk_half_width(y) - 3
+            if half <= 1:
+                continue
+            x = TRUNK_X + rng.uniform(-half, half)
+            self.speckles.append((x, y))
 
-    def nose(self):
-        radians = math.radians(self.angle)
-        return (
-            self.x + math.cos(radians) * SHIP_SIZE,
-            self.y + math.sin(radians) * SHIP_SIZE,
+    # ── growing ──────────────────────────────────────────────────────────────
+
+    def anchor_near(self, point):
+        """Find somewhere on the tree to grow from, or None if you missed.
+
+        You can start a branch anywhere on the trunk or on any branch already
+        drawn — so we check every stretch of wood and keep the nearest.
+        """
+        best = None
+        best_distance = GRAB_DISTANCE
+
+        trunk_point = closest_point_on_segment(
+            point, (TRUNK_X, TRUNK_TOP_Y), (TRUNK_X, GROUND_Y)
         )
+        if math.dist(point, trunk_point) <= best_distance:
+            best, best_distance = trunk_point, math.dist(point, trunk_point)
 
+        for branch in self.branches:
+            for i in range(len(branch.path) - 1):
+                candidate = closest_point_on_segment(
+                    point, branch.path[i], branch.path[i + 1]
+                )
+                distance = math.dist(point, candidate)
+                if distance <= best_distance:
+                    best, best_distance = candidate, distance
+        return best
 
-class Bullet:
-    def __init__(self, x, y, angle):
-        radians = math.radians(angle)
-        self.x = x
-        self.y = y
-        self.vx = math.cos(radians) * BULLET_SPEED
-        self.vy = math.sin(radians) * BULLET_SPEED
-        self.life = BULLET_LIFETIME
-        self.radius = 2
+    def grow(self, path, kind):
+        """Add a finished branch, with its disc sitting at the tip."""
+        tip = path[-1]
+        branch = Branch(path, Disc(tip[0], tip[1], kind))
+        self.branches.append(branch)
+        return branch
 
-    def update(self, dt):
-        self.x, self.y = wrap(self.x + self.vx * dt, self.y + self.vy * dt)
-        self.life -= dt
+    # ── physics ──────────────────────────────────────────────────────────────
 
-    def draw(self, surface):
-        pygame.draw.rect(surface, LINE_COLOR, (self.x - 1.5, self.y - 1.5, 3, 3), 0)
+    def centre_of_mass(self):
+        """Where the tree's weight sits, side to side.
 
+        The trunk counts as a lump of weight at its own base — that's what
+        stops the very first disc from tipping everything over.
+        """
+        total = TRUNK_MASS
+        moment = TRUNK_MASS * TRUNK_X
+        for branch in self.branches:
+            total += branch.disc.mass
+            moment += branch.disc.mass * branch.disc.x
+        return moment / total
 
-class Rock:
-    def __init__(self, x, y, size):
-        self.x = x
-        self.y = y
-        self.size = size
-        self.radius = ROCK_RADIUS[size]
+    def is_balanced(self):
+        return abs(self.centre_of_mass() - TRUNK_X) <= BASE_HALF_WIDTH
 
-        angle = random.uniform(0, math.tau)
-        speed = ROCK_SPEED[size] * random.uniform(0.7, 1.3)
-        self.vx = math.cos(angle) * speed
-        self.vy = math.sin(angle) * speed
-        self.spin = random.uniform(-60, 60)
-        self.angle = random.uniform(0, 360)
-
-        # A lumpy circle with a few deep notches — this is what makes rocks look
-        # like rocks instead of like blobs.
-        corners = random.randint(9, 12)
-        self.shape = []
-        for i in range(corners):
-            theta = math.tau * i / corners
-            jitter = random.uniform(0.78, 1.1)
-            if random.random() < 0.25:
-                jitter = random.uniform(0.42, 0.58)   # a chunk taken out
-            self.shape.append((math.cos(theta) * jitter, math.sin(theta) * jitter))
-
-    def update(self, dt):
-        self.x, self.y = wrap(self.x + self.vx * dt, self.y + self.vy * dt)
-        self.angle += self.spin * dt
+    # ── drawing ──────────────────────────────────────────────────────────────
 
     def draw(self, surface):
-        radians = math.radians(self.angle)
-        cos_a, sin_a = math.cos(radians), math.sin(radians)
-        points = [
-            (
-                self.x + (px * cos_a - py * sin_a) * self.radius,
-                self.y + (px * sin_a + py * cos_a) * self.radius,
-            )
-            for px, py in self.shape
-        ]
-        draw_shape(surface, points)
+        self.draw_roots(surface)
+        self.draw_trunk(surface)
+        for branch in self.branches:
+            branch.draw(surface)
+        for branch in self.branches:
+            branch.disc.draw(surface)
 
-    def split(self):
-        """Break into smaller rocks. Smallest rocks just vanish."""
-        if self.size <= 1:
-            return []
-        return [Rock(self.x, self.y, self.size - 1) for _ in range(ROCK_SPLIT_COUNT)]
+    def draw_roots(self, surface):
+        """Little legs splaying out to the ground, like the reference tree."""
+        for direction in (-1, 1):
+            for reach, start_y in ((34, 596), (18, 612)):
+                stroke(
+                    surface,
+                    curve(
+                        (TRUNK_X, start_y),
+                        (TRUNK_X + direction * reach * 0.3, start_y + 10),
+                        (TRUNK_X + direction * reach * 0.8, start_y + 18),
+                        (TRUNK_X + direction * reach, GROUND_Y),
+                    ),
+                    8,
+                    3,
+                    WOOD,
+                )
 
+    def draw_trunk(self, surface):
+        left, right = [], []
+        y = TRUNK_TOP_Y
+        while y <= GROUND_Y:
+            half = self.trunk_half_width(y)
+            left.append((TRUNK_X - half, y))
+            right.append((TRUNK_X + half, y))
+            y += 6
+        pygame.draw.polygon(surface, WOOD, left + right[::-1])
 
-class Debris:
-    """A little burst of lines when something is destroyed."""
-
-    def __init__(self, x, y, count=8):
-        self.pieces = []
-        for _ in range(count):
-            angle = random.uniform(0, math.tau)
-            speed = random.uniform(40, 170)
-            self.pieces.append(
-                [x, y, math.cos(angle) * speed, math.sin(angle) * speed]
-            )
-        self.life = 0.6
-
-    def update(self, dt):
-        for piece in self.pieces:
-            piece[0] += piece[2] * dt
-            piece[1] += piece[3] * dt
-        self.life -= dt
-
-    def draw(self, surface):
-        for x, y, vx, vy in self.pieces:
-            scale = 0.03
-            pygame.draw.line(
-                surface, LINE_COLOR, (x, y), (x - vx * scale, y - vy * scale), 1
-            )
+        for x, y in self.speckles:
+            pygame.draw.circle(surface, WOOD_SPECKLE, (int(x), int(y)), 1)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -273,147 +403,89 @@ class Debris:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def collides(a, b):
-    return math.hypot(a.x - b.x, a.y - b.y) < a.radius + b.radius
-
-
 class Game:
     def __init__(self):
         self.start_new_game()
 
     def start_new_game(self):
-        self.ship = Ship()
-        self.bullets = []
-        self.rocks = []
-        self.debris = []
+        self.tree = Tree()
         self.score = 0
-        self.lives = STARTING_LIVES
-        self.wave = 0
-        self.time_alive = 0.0
-        self.fire_timer = 0.0
         self.over = False
+        self.drawing = None          # the line you're dragging out right now
+        self.next_disc = random.randrange(len(DISC_TYPES))
         reset_score()
-        submit_score(0)
-        self.next_wave()
 
-    def next_wave(self):
-        self.wave += 1
-        count = STARTING_ROCKS + self.wave - 1
-        for _ in range(count):
-            # Spawn away from the middle so rocks don't appear on top of the ship.
-            while True:
-                x = random.uniform(0, WIDTH)
-                y = random.uniform(0, HEIGHT)
-                if math.hypot(x - WIDTH / 2, y - HEIGHT / 2) > 180:
-                    break
-            self.rocks.append(Rock(x, y, 3))
+    # ── drawing a branch ─────────────────────────────────────────────────────
 
-    def shoot(self):
-        if self.fire_timer > 0 or len(self.bullets) >= MAX_BULLETS:
+    def begin_drag(self, position):
+        """Start a branch, but only if you grabbed the tree somewhere."""
+        anchor = self.tree.anchor_near(position)
+        if anchor is not None:
+            self.drawing = [anchor]
+
+    def extend_drag(self, position):
+        if self.drawing is None:
             return
-        nose_x, nose_y = self.ship.nose()
-        self.bullets.append(Bullet(nose_x, nose_y, self.ship.angle))
-        self.fire_timer = BULLET_COOLDOWN
+        # Skip points that barely moved — they add jitter and nothing else.
+        if math.dist(self.drawing[-1], position) >= 3:
+            self.drawing.append(position)
 
-    def add_score(self, points):
-        self.score += points
-        submit_score(self.score)
-
-    def lose_a_life(self):
-        self.debris.append(Debris(self.ship.x, self.ship.y, 12))
-        self.lives -= 1
-        if self.lives <= 0:
-            self.over = True
-            game_over(self.score)
-        else:
-            self.ship.reset()
-
-    def update(self, dt, keys):
-        self.time_alive += dt
-        if self.over:
-            for burst in self.debris:
-                burst.update(dt)
-            self.debris = [d for d in self.debris if d.life > 0]
+    def finish_drag(self):
+        """Let go: keep the branch if the drag was long enough to mean it."""
+        if self.drawing is None:
             return
+        drawn, self.drawing = self.drawing, None
+        if len(drawn) < 2 or path_length(drawn) < MIN_BRANCH_LENGTH:
+            return
+        self.tree.grow(tidy(drawn), self.next_disc)
+        # Roll the next one now, so the preview can always show what's coming.
+        self.next_disc = random.randrange(len(DISC_TYPES))
 
-        self.fire_timer = max(0.0, self.fire_timer - dt)
-        self.ship.update(dt, keys)
-        if keys[pygame.K_SPACE]:
-            self.shoot()
-
-        for bullet in self.bullets:
-            bullet.update(dt)
-        self.bullets = [b for b in self.bullets if b.life > 0]
-
-        for rock in self.rocks:
-            rock.update(dt)
-
-        for burst in self.debris:
-            burst.update(dt)
-        self.debris = [d for d in self.debris if d.life > 0]
-
-        # Bullets vs rocks.
-        surviving_rocks = []
-        for rock in self.rocks:
-            hit_by = None
-            for bullet in self.bullets:
-                if collides(rock, bullet):
-                    hit_by = bullet
-                    break
-            if hit_by is None:
-                surviving_rocks.append(rock)
-                continue
-            self.bullets.remove(hit_by)
-            self.add_score(ROCK_POINTS[rock.size])
-            self.debris.append(Debris(rock.x, rock.y))
-            surviving_rocks.extend(rock.split())
-        self.rocks = surviving_rocks
-
-        # Rocks vs ship.
-        if self.ship.invuln <= 0:
-            for rock in self.rocks:
-                if collides(rock, self.ship):
-                    self.lose_a_life()
-                    break
-
-        if not self.rocks:
-            self.next_wave()
+    # ── drawing to the screen ────────────────────────────────────────────────
 
     def draw(self, surface):
         surface.fill(BACKGROUND)
+        pygame.draw.line(
+            surface, GROUND_COLOR, (110, GROUND_Y), (WIDTH - 110, GROUND_Y), 2
+        )
+        self.tree.draw(surface)
+        self.draw_preview(surface)
 
-        for rock in self.rocks:
-            rock.draw(surface)
-        for bullet in self.bullets:
-            bullet.draw(surface)
-        for burst in self.debris:
-            burst.draw(surface)
-        if not self.over:
-            self.ship.draw(surface, self.time_alive)
+        if SHOW_BALANCE:
+            self.draw_balance(surface)
 
-        self.draw_hud(surface)
+    def draw_preview(self, surface):
+        """Show the branch you'd get if you let go now, disc and all.
 
-        if self.over:
-            draw_text(surface, "GAME OVER", (WIDTH / 2, HEIGHT / 2 - 70), size=64, align="center")
-            draw_text(surface, f"SCORE {self.score}", (WIDTH / 2, HEIGHT / 2 + 10),
-                      size=34, align="center")
-            draw_text(surface, "PRESS R TO PLAY AGAIN", (WIDTH / 2, HEIGHT / 2 + 60),
-                      size=24, align="center")
+        The disc is the one already rolled for this branch, so the weight you
+        can see is the weight you'll get — the only thing you're choosing is
+        where to put it.
+        """
+        if self.drawing is None:
+            return
 
-    def draw_hud(self, surface):
-        draw_text(surface, str(self.score), (28, 22), size=48)
+        path = tidy(self.drawing)
+        if path_length(self.drawing) < MIN_BRANCH_LENGTH:
+            # Too short to plant — show it faintly so you know it won't take.
+            stroke(surface, path, BRANCH_WIDTH_START, BRANCH_WIDTH_END, PENDING)
+            return
 
-        # Lives, drawn as little ships.
-        for i in range(self.lives):
-            x = 34 + i * 30
-            y = 90
-            points = [
-                (x + (px * 0.0 - py * -1.0) * 11, y + (px * -1.0 + py * 0.0) * 11)
-                for px, py in Ship.SHAPE
-            ]
-            draw_shape(surface, points, width=2)
+        stroke(surface, path, BRANCH_WIDTH_START, BRANCH_WIDTH_END, WOOD)
+        Disc(path[-1][0], path[-1][1], self.next_disc).draw(surface)
 
-        draw_text(surface, f"WAVE {self.wave}", (WIDTH - 28, 26), size=24, align="right")
+    def draw_balance(self, surface):
+        """Only drawn when SHOW_BALANCE is on — the game is much easier with it."""
+        y = GROUND_Y + 16
+        pygame.draw.line(
+            surface,
+            (150, 150, 150),
+            (TRUNK_X - BASE_HALF_WIDTH, y),
+            (TRUNK_X + BASE_HALF_WIDTH, y),
+            3,
+        )
+        centre = self.tree.centre_of_mass()
+        colour = (40, 140, 60) if self.tree.is_balanced() else (200, 50, 40)
+        pygame.draw.circle(surface, colour, (int(centre), y), 6)
 
 
 async def main():
@@ -426,18 +498,23 @@ async def main():
     running = True
 
     while running:
-        dt = min(clock.tick(FPS) / 1000.0, 0.05)   # cap dt so lag can't teleport things
+        clock.tick(FPS)
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                game.begin_drag(event.pos)
+            elif event.type == pygame.MOUSEMOTION:
+                game.extend_drag(event.pos)
+            elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                game.finish_drag()
             elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_r and game.over:
+                if event.key == pygame.K_r:
                     game.start_new_game()
                 # ESC is not handled here on purpose — in Islands World it means
                 # "leave this island", and the world itself takes care of that.
 
-        game.update(dt, pygame.key.get_pressed())
         game.draw(screen)
         pygame.display.flip()
 
