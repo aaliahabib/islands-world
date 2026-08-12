@@ -26,6 +26,37 @@ def git(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["git", *args], cwd=REPO_ROOT, capture_output=True, text=True)
 
 
+def unpushed_count(me: str) -> int | None:
+    """How many commits are on HEAD but not yet on origin/<me>?
+
+    Returns None when we can't tell — usually because this island has never
+    been shared, so there's no origin/<me> to compare against yet.
+    """
+    if git("rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{me}").returncode != 0:
+        return None
+    out = git("rev-list", "--count", f"origin/{me}..HEAD").stdout.strip()
+    return int(out) if out.isdigit() else None
+
+
+def explain_push_failure(stderr: str) -> str:
+    """Turn git's push error into advice that actually fixes the problem."""
+    low = stderr.lower()
+    if "non-fast-forward" in low or "fetch first" in low or "rejected" in low:
+        return (
+            "   Your branch is behind the copy on GitHub — someone else pushed to it.\n"
+            "   Say 'update' first, then share again."
+        )
+    if any(s in low for s in ("authentication", "could not read password", "403", "permission denied")):
+        return (
+            "   This computer isn't signed in to GitHub for this project.\n"
+            "   Get your teacher — this one needs fixing on the machine."
+        )
+    return (
+        "   This might just be the network. Try again in a few seconds:\n"
+        "   just say 'share' again. If it keeps failing, get your teacher."
+    )
+
+
 def student_id() -> str:
     """Your island id. It's your branch name — scripts/setup put you there."""
     marker = REPO_ROOT / ".student"
@@ -73,31 +104,42 @@ def main() -> int:
         for line in others[:8]:
             print(f"    {path_of(line)}")
 
+    # Work saved on an earlier run whose push failed. Without this, a student
+    # whose first share commits but can't reach GitHub is stuck forever on
+    # "nothing new to share" while their work never leaves the laptop.
+    pending = unpushed_count(me)
+
     if not mine:
-        print(f"\n✅ Nothing new to share — {my_folder} hasn't changed since last time.")
-        return 0
+        if pending == 0:
+            print(f"\n✅ Nothing new to share — {my_folder} hasn't changed since last time.")
+            return 0
+        print("  (nothing new since you last saved — sending the work that")
+        print("   didn't make it out last time)")
+    else:
+        git("add", "--", my_folder)
 
-    git("add", "--", my_folder)
-
-    message = args.message.strip() if args.message else f"{me}: update island"
-    commit = git("commit", "-m", message)
-    if commit.returncode != 0 and "nothing to commit" not in commit.stdout:
-        print("😅 Couldn't save your changes:")
-        print(commit.stdout or commit.stderr)
-        return 1
+        message = args.message.strip() if args.message else f"{me}: update island"
+        # The pathspec matters. Without it, commit sweeps in anything else that
+        # was already staged — including files we just said we'd leave alone.
+        commit = git("commit", "-m", message, "--", my_folder)
+        if commit.returncode != 0 and "nothing to commit" not in commit.stdout:
+            print("😅 Couldn't save your changes:")
+            print(commit.stdout or commit.stderr)
+            return 1
 
     push = git("push", "origin", f"HEAD:{me}")
     if push.returncode != 0:
         print("\n😅 Couldn't send it just now.")
         print("   Your work IS saved on this computer — nothing is lost.")
-        print("   Try again in a few seconds: just say 'share' again.\n")
+        print(explain_push_failure(push.stderr))
+        print()
         print(push.stderr.strip()[:400])
         return 1
 
     changed = len(mine)
     print()
     print("─" * 46)
-    print(f"Shared! ✅   ({changed} file{'s' if changed != 1 else ''})")
+    print(f"Shared! ✅   ({changed} file{'s' if changed != 1 else ''})" if changed else "Shared! ✅")
     print(f"Your island '{me}' is on its way to the world.")
     print("Ask your teacher to merge it, then go play it.")
     print("─" * 46)
