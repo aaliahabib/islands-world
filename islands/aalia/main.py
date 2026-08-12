@@ -53,15 +53,33 @@ TRUNK_TOP_Y = 430                # and reaches up to here
 TRUNK_BASE_HALF = 24             # half its width at the ground
 TRUNK_TOP_HALF = 6               # and at the top
 
-BASE_HALF_WIDTH = 96             # how far the weight can lean before it topples
-TRUNK_MASS = 900                 # the trunk's own weight — the difficulty dial.
-                                 # Bigger = steadier tree = easier game.
+BASE_HALF_WIDTH = 36             # how far the weight can sit off-centre before
+                                 # the tree starts tipping. Smaller = harder.
+TRUNK_MASS = 900                 # the trunk's own weight — the other difficulty
+                                 # dial. Bigger = steadier tree = easier game.
+
+# Once the weight goes past the base the tree starts to fall — but you can save
+# it. Hang something on the other side fast enough and it swings back upright.
+TIP_ACCELERATION = 1.0           # how hard an overbalanced tree tips over
+RIGHTING_STRENGTH = 9.0          # how eagerly a supported tree stands back up
+TILT_DAMPING = 5.0               # slows the lean down — this is what gives you
+                                 # time to react. Lower = falls faster.
+POINT_OF_NO_RETURN = 40          # degrees of tilt you cannot come back from
 
 BRANCH_WIDTH_START = 9           # branches taper from this…
 BRANCH_WIDTH_END = 3             # …down to this at the tip
 
 GRAB_DISTANCE = 26               # how near a branch you must click to grab it
 MIN_BRANCH_LENGTH = 45           # shorter drags than this are ignored
+
+SCORE_SCALE = 5000               # a branch scores its disc's weight times how
+                                 # far out you hung it, divided by this. Make
+                                 # it smaller for bigger, showier numbers.
+
+FALL_ACCELERATION = 7.0          # how fast a doomed tree tips over
+TEXT_COLOR = (60, 58, 54)
+FONT_NAME = None                 # None = pygame's built-in font
+FONT_SIZE = 26
 
 SHOW_BALANCE = False             # True draws the centre of mass and the safe
                                  # footprint, which makes the game much easier
@@ -136,6 +154,20 @@ def s_curve(start, end, bend_a, bend_b, steps=30):
     control_a = (start[0] + dx / 3 + nx * bend_a, start[1] + dy / 3 + ny * bend_a)
     control_b = (start[0] + dx * 2 / 3 + nx * bend_b, start[1] + dy * 2 / 3 + ny * bend_b)
     return curve(start, control_a, control_b, end, steps)
+
+
+def rotate(points, pivot, angle):
+    """Swing a list of points around a pivot — how the whole tree falls over."""
+    if angle == 0:
+        return points
+    sin_a, cos_a = math.sin(angle), math.cos(angle)
+    turned = []
+    for x, y in points:
+        dx, dy = x - pivot[0], y - pivot[1]
+        turned.append(
+            (pivot[0] + dx * cos_a - dy * sin_a, pivot[1] + dx * sin_a + dy * cos_a)
+        )
+    return turned
 
 
 def closest_point_on_segment(point, a, b):
@@ -220,10 +252,24 @@ class Disc:
         """Weight goes up with area, so looping twice as wide is 4x as heavy."""
         return math.pi * self.radius * self.radius
 
-    def draw(self, surface):
+    def draw(self, surface, at=None):
+        x, y = at if at is not None else (self.x, self.y)
         for colour, size in self.rings:
             r = max(1, int(self.radius * size))
-            pygame.draw.circle(surface, colour, (int(self.x), int(self.y)), r)
+            pygame.draw.circle(surface, colour, (int(x), int(y)), r)
+
+
+def risk_points(x, kind):
+    """What a disc of this kind, hung at this x, is worth.
+
+    It's the same sum that decides whether the tree falls over: how heavy the
+    disc is, times how far from the trunk you hung it. A heavy disc out on a
+    limb is worth many times a small one tucked in beside the trunk — and it's
+    exactly as much more likely to kill you.
+    """
+    radius = DISC_TYPES[kind % len(DISC_TYPES)][0]
+    mass = math.pi * radius * radius
+    return max(1, round(mass * abs(x - TRUNK_X) / SCORE_SCALE))
 
 
 class Branch:
@@ -342,49 +388,83 @@ class Tree:
     # ── physics ──────────────────────────────────────────────────────────────
 
     def centre_of_mass(self):
-        """Where the tree's weight sits, side to side.
+        """Where the tree's weight sits — both across AND up.
 
-        The trunk counts as a lump of weight at its own base — that's what
+        Height matters as much as sideways position: weight hung high swings
+        much further out when the tree starts to lean, which is why a top-heavy
+        tree tips so much faster than a wide low one.
+
+        The trunk counts as a lump of weight halfway up itself — that's what
         stops the very first disc from tipping everything over.
         """
+        trunk_middle = (TRUNK_TOP_Y + GROUND_Y) / 2
         total = TRUNK_MASS
-        moment = TRUNK_MASS * TRUNK_X
+        moment_x = TRUNK_MASS * TRUNK_X
+        moment_y = TRUNK_MASS * trunk_middle
         for branch in self.branches:
-            total += branch.disc.mass
-            moment += branch.disc.mass * branch.disc.x
-        return moment / total
+            mass = branch.disc.mass
+            total += mass
+            moment_x += mass * branch.disc.x
+            moment_y += mass * branch.disc.y
+        return moment_x / total, moment_y / total
 
-    def is_balanced(self):
-        return abs(self.centre_of_mass() - TRUNK_X) <= BASE_HALF_WIDTH
+    def lean_offset(self, tilt):
+        """How far past the base the weight is, with the tree tilted this far.
+
+        This is the whole game in one line: as the tree leans, its weight
+        swings out sideways, which makes it lean further. Positive means the
+        weight has gone off to the right.
+        """
+        cx, cy = self.centre_of_mass()
+        dx = cx - TRUNK_X
+        dy = cy - GROUND_Y                     # negative, because up is less y
+        return dx * math.cos(tilt) - dy * math.sin(tilt)
+
+    def is_balanced(self, tilt=0.0):
+        return abs(self.lean_offset(tilt)) <= BASE_HALF_WIDTH
 
     # ── drawing ──────────────────────────────────────────────────────────────
 
-    def draw(self, surface):
-        self.draw_roots(surface)
-        self.draw_trunk(surface)
-        for branch in self.branches:
-            branch.draw(surface)
-        for branch in self.branches:
-            branch.disc.draw(surface)
+    def draw(self, surface, angle=0.0):
+        """Draw the tree, optionally tipped over by `angle` about its base."""
+        pivot = (TRUNK_X, GROUND_Y)
 
-    def draw_roots(self, surface):
+        def swing(points):
+            return rotate(points, pivot, angle)
+
+        self.draw_roots(surface, swing)
+        self.draw_trunk(surface, swing)
+        for branch in self.branches:
+            stroke(
+                surface,
+                swing(branch.path),
+                BRANCH_WIDTH_START,
+                BRANCH_WIDTH_END,
+                WOOD,
+            )
+        for branch in self.branches:
+            branch.disc.draw(surface, swing([(branch.disc.x, branch.disc.y)])[0])
+
+    def draw_roots(self, surface, swing):
         """Little legs splaying out to the ground, like the reference tree."""
         for direction in (-1, 1):
             for reach, start_y in ((34, 596), (18, 612)):
                 stroke(
                     surface,
-                    curve(
-                        (TRUNK_X, start_y),
-                        (TRUNK_X + direction * reach * 0.3, start_y + 10),
-                        (TRUNK_X + direction * reach * 0.8, start_y + 18),
-                        (TRUNK_X + direction * reach, GROUND_Y),
+                    swing(
+                        curve(
+                            (TRUNK_X, start_y),
+                            (TRUNK_X + direction * reach * 0.3, start_y + 10),
+                            (TRUNK_X + direction * reach * 0.8, start_y + 18),
+                            (TRUNK_X + direction * reach, GROUND_Y),
+                        )
                     ),
                     8,
                     3,
                     WOOD,
                 )
 
-    def draw_trunk(self, surface):
+    def draw_trunk(self, surface, swing):
         left, right = [], []
         y = TRUNK_TOP_Y
         while y <= GROUND_Y:
@@ -392,9 +472,9 @@ class Tree:
             left.append((TRUNK_X - half, y))
             right.append((TRUNK_X + half, y))
             y += 6
-        pygame.draw.polygon(surface, WOOD, left + right[::-1])
+        pygame.draw.polygon(surface, WOOD, swing(left) + swing(right)[::-1])
 
-        for x, y in self.speckles:
+        for x, y in swing(self.speckles):
             pygame.draw.circle(surface, WOOD_SPECKLE, (int(x), int(y)), 1)
 
 
@@ -410,25 +490,73 @@ class Game:
     def start_new_game(self):
         self.tree = Tree()
         self.score = 0
+        self.branches = 0
         self.over = False
         self.drawing = None          # the line you're dragging out right now
         self.next_disc = random.randrange(len(DISC_TYPES))
+        self.tilt = 0.0              # which way, and how far, the tree is leaning
+        self.tilt_speed = 0.0
+        self.fall_direction = 1      # +1 fell right, -1 fell left
         reset_score()
+
+    def update(self, dt):
+        """Lean the tree, and decide whether it's saveable or finished."""
+        if self.over:
+            # Past saving. Keep going until it's flat on the ground.
+            self.tilt_speed += FALL_ACCELERATION * dt * self.fall_direction
+            self.tilt += self.tilt_speed * dt
+            limit = math.pi / 2
+            self.tilt = max(-limit, min(limit, self.tilt))
+            return
+
+        offset = self.tree.lean_offset(self.tilt)
+
+        if abs(offset) > BASE_HALF_WIDTH:
+            # The weight has walked off the end of the base. Down it goes —
+            # and the further it goes, the harder it pulls.
+            past = (abs(offset) - BASE_HALF_WIDTH) / BASE_HALF_WIDTH
+            direction = 1 if offset > 0 else -1
+            self.tilt_speed += TIP_ACCELERATION * past * direction * dt
+        else:
+            # The base is holding it up, so it swings back toward standing.
+            self.tilt_speed -= RIGHTING_STRENGTH * self.tilt * dt
+
+        # Damping either way: it stops a rescued tree rocking forever, and it
+        # stops a doomed one accelerating out of reach before you can respond.
+        self.tilt_speed -= TILT_DAMPING * self.tilt_speed * dt
+        self.tilt += self.tilt_speed * dt
+
+        if abs(self.tilt) >= math.radians(POINT_OF_NO_RETURN):
+            self.over = True
+            self.fall_direction = 1 if self.tilt > 0 else -1
+            game_over(self.score)
 
     # ── drawing a branch ─────────────────────────────────────────────────────
 
+    def in_tree_space(self, position):
+        """Undo the tree's lean, so a click lands where the tree thinks it is.
+
+        Everything about the tree is stored upright and only tilted when drawn.
+        So when it's leaning we have to swing the mouse the other way before
+        asking which branch you clicked.
+        """
+        return rotate([position], (TRUNK_X, GROUND_Y), -self.tilt)[0]
+
     def begin_drag(self, position):
         """Start a branch, but only if you grabbed the tree somewhere."""
-        anchor = self.tree.anchor_near(position)
+        if self.over:
+            return
+        anchor = self.tree.anchor_near(self.in_tree_space(position))
         if anchor is not None:
             self.drawing = [anchor]
 
     def extend_drag(self, position):
         if self.drawing is None:
             return
+        point = self.in_tree_space(position)
         # Skip points that barely moved — they add jitter and nothing else.
-        if math.dist(self.drawing[-1], position) >= 3:
-            self.drawing.append(position)
+        if math.dist(self.drawing[-1], point) >= 3:
+            self.drawing.append(point)
 
     def finish_drag(self):
         """Let go: keep the branch if the drag was long enough to mean it."""
@@ -437,24 +565,36 @@ class Game:
         drawn, self.drawing = self.drawing, None
         if len(drawn) < 2 or path_length(drawn) < MIN_BRANCH_LENGTH:
             return
-        self.tree.grow(tidy(drawn), self.next_disc)
+        path = tidy(drawn)
+        self.tree.grow(path, self.next_disc)
+        self.branches += 1
+        self.score += risk_points(path[-1][0], self.next_disc)
+        submit_score(self.score)
         # Roll the next one now, so the preview can always show what's coming.
         self.next_disc = random.randrange(len(DISC_TYPES))
 
     # ── drawing to the screen ────────────────────────────────────────────────
 
-    def draw(self, surface):
+    def draw(self, surface, font):
         surface.fill(BACKGROUND)
         pygame.draw.line(
             surface, GROUND_COLOR, (110, GROUND_Y), (WIDTH - 110, GROUND_Y), 2
         )
-        self.tree.draw(surface)
-        self.draw_preview(surface)
+        self.tree.draw(surface, self.tilt)
+        self.draw_preview(surface, font)
 
         if SHOW_BALANCE:
             self.draw_balance(surface)
 
-    def draw_preview(self, surface):
+        surface.blit(font.render(f"SCORE {self.score}", True, TEXT_COLOR), (28, 24))
+        surface.blit(
+            font.render(f"BRANCHES {self.branches}", True, TEXT_COLOR), (28, 54)
+        )
+        if self.over:
+            message = font.render("IT FELL OVER — PRESS R TO GROW AGAIN", True, TEXT_COLOR)
+            surface.blit(message, (WIDTH // 2 - message.get_width() // 2, 24))
+
+    def draw_preview(self, surface, font):
         """Show the branch you'd get if you let go now, disc and all.
 
         The disc is the one already rolled for this branch, so the weight you
@@ -464,14 +604,23 @@ class Game:
         if self.drawing is None:
             return
 
-        path = tidy(self.drawing)
+        # Drawn upright like the rest of the tree, then leaned to match it.
+        path = rotate(tidy(self.drawing), (TRUNK_X, GROUND_Y), self.tilt)
         if path_length(self.drawing) < MIN_BRANCH_LENGTH:
             # Too short to plant — show it faintly so you know it won't take.
             stroke(surface, path, BRANCH_WIDTH_START, BRANCH_WIDTH_END, PENDING)
             return
 
         stroke(surface, path, BRANCH_WIDTH_START, BRANCH_WIDTH_END, WOOD)
-        Disc(path[-1][0], path[-1][1], self.next_disc).draw(surface)
+        tip = path[-1]
+        Disc(tip[0], tip[1], self.next_disc).draw(surface)
+
+        # What this branch is worth, so you can see the reward growing as you
+        # drag further out — and feel the risk growing with it.
+        points = risk_points(tidy(self.drawing)[-1][0], self.next_disc)
+        label = font.render(f"+{points}", True, TEXT_COLOR)
+        radius = DISC_TYPES[self.next_disc % len(DISC_TYPES)][0]
+        surface.blit(label, (tip[0] - label.get_width() / 2, tip[1] - radius - 30))
 
     def draw_balance(self, surface):
         """Only drawn when SHOW_BALANCE is on — the game is much easier with it."""
@@ -483,9 +632,9 @@ class Game:
             (TRUNK_X + BASE_HALF_WIDTH, y),
             3,
         )
-        centre = self.tree.centre_of_mass()
-        colour = (40, 140, 60) if self.tree.is_balanced() else (200, 50, 40)
-        pygame.draw.circle(surface, colour, (int(centre), y), 6)
+        offset = self.tree.lean_offset(self.tilt)
+        colour = (40, 140, 60) if abs(offset) <= BASE_HALF_WIDTH else (200, 50, 40)
+        pygame.draw.circle(surface, colour, (int(TRUNK_X + offset), y), 6)
 
 
 async def main():
@@ -493,12 +642,13 @@ async def main():
     pygame.display.set_caption(TITLE)
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
     clock = pygame.time.Clock()
+    font = pygame.font.Font(FONT_NAME, FONT_SIZE)
 
     game = Game()
     running = True
 
     while running:
-        clock.tick(FPS)
+        dt = min(clock.tick(FPS) / 1000.0, 0.05)   # cap dt so lag can't jump the fall
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -515,7 +665,8 @@ async def main():
                 # ESC is not handled here on purpose — in Islands World it means
                 # "leave this island", and the world itself takes care of that.
 
-        game.draw(screen)
+        game.update(dt)
+        game.draw(screen, font)
         pygame.display.flip()
 
         # Required for the browser build — hands control back to the page each
