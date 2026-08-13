@@ -34,3 +34,6 @@ Thumbs.db
 .idea/
 *.iml
 .vscode/
+
+# Stray dir from an unexpanded CLAUDE_CONFIG_DIR (literal "~")
+/~/
