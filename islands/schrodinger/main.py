@@ -1,3 +1,4 @@
+# test to verify git access
 """ASTEROIDS — your island's game.
 
 Fly the ship, shoot the rocks, don't get hit. Big rocks split into smaller ones.
