@@ -1,15 +1,17 @@
-"""ASTEROIDS — your island's game.
+"""RHYTHM ISLAND — your island's game.
 
-Fly the ship, shoot the rocks, don't get hit. Big rocks split into smaller ones.
+Four lane circles sit at the bottom. Notes fall down each lane — hit D, F, J or
+K right as a note reaches its circle. The closer to dead-center you hit it, the
+more points you get. After 10 seconds, some notes grow a tail — hold the key
+down until the tail finishes for a big bonus. Miss 20 notes and it's game over.
 
-    LEFT / RIGHT  (or A / D)   turn
-    UP            (or W)       thrust
-    SPACE                      shoot
-    R                          restart after game over
+    D / F / J / K   hit the matching lane (hold for tailed notes)
+    R               restart after game over
 
 This is YOUR game now. The fastest way to make it yours is the CUSTOMIZE block
-just below — change the colours, make the ship faster, give yourself 10 lives.
-Then run it and see what happened. After that, ask Claude for bigger changes.
+just below — change the colours, make notes fall faster, change how forgiving
+the hit window is. Then run it and see what happened. After that, ask Claude
+for bigger changes.
 
 Two rules that keep your island working inside Islands World:
   1. keep `async def main()` and the `await asyncio.sleep(0)` at the end of the
@@ -19,7 +21,6 @@ Two rules that keep your island working inside Islands World:
 """
 
 import asyncio
-import math
 import random
 
 import pygame
@@ -31,59 +32,48 @@ from islands_sdk import game_over, reset as reset_score, submit_score
 #  break the game; the worst that happens is it gets silly.
 # ─────────────────────────────────────────────────────────────────────────────
 
-TITLE = "Asteroid Island"
+TITLE = "Rhythm Island"
 
 WIDTH = 900                      # size of the game window
 HEIGHT = 700
 
-BACKGROUND = (0, 0, 0)           # colours are (RED, GREEN, BLUE), 0–255
-LINE_COLOR = (255, 255, 255)     # everything is drawn as lines in this colour
-LINE_WIDTH = 2
+BACKGROUND = (10, 10, 18)
+LINE_COLOR = (255, 255, 255)
 FONT_NAME = None                 # None = pygame's built-in font
 
-SHIP_SIZE = 22                   # how big the ship is
-SHIP_TURN_SPEED = 220            # degrees per second
-SHIP_THRUST = 340                # how hard the engine pushes
-SHIP_MAX_SPEED = 430             # top speed
-SHIP_DRAG = 0.45                 # how fast you coast to a stop (0 = never)
-SHIP_INVULN_TIME = 2.0           # seconds of blinking safety after respawning
+LANES = [
+    {"key": pygame.K_d, "label": "D", "color": (255, 90, 90)},
+    {"key": pygame.K_f, "label": "F", "color": (255, 210, 80)},
+    {"key": pygame.K_j, "label": "J", "color": (100, 220, 140)},
+    {"key": pygame.K_k, "label": "K", "color": (110, 170, 255)},
+]
 
-BULLET_SPEED = 560
-BULLET_LIFETIME = 0.85           # seconds before a bullet fizzles out
-BULLET_COOLDOWN = 0.20           # seconds between shots
-MAX_BULLETS = 5
+TARGET_Y = HEIGHT - 110          # height of the fixed circles
+TARGET_RADIUS = 36
+NOTE_RADIUS = 26
 
-STARTING_LIVES = 3
-STARTING_ROCKS = 4               # rocks in wave 1; each wave adds one more
+NOTE_SPEED = 380                 # pixels per second, falling down
+NOTE_SPAWN_INTERVAL = 0.55       # seconds between new notes, steady pace
 
-# Rocks come in 3 sizes. size 3 = big, 2 = medium, 1 = small.
-ROCK_RADIUS = {3: 54, 2: 30, 1: 16}
-ROCK_SPEED = {3: 55, 2: 90, 1: 140}
-ROCK_POINTS = {3: 20, 2: 50, 1: 100}   # points for shooting one
-ROCK_SPLIT_COUNT = 2                   # how many pieces a rock breaks into
+HIT_WINDOW = 55                  # how far (in pixels) from dead-center still counts as a hit
+MAX_HIT_POINTS = 100             # points for a perfect, dead-center hit
+MISS_PENALTY = 15                # points lost for letting a note go by
+MAX_MISSES = 20                  # game over once you've missed this many
+
+CHORD_FREE_TIME = 60.0           # seconds before two notes are allowed to need hitting at once
+
+HOLD_NOTES_START_AT = 10.0       # seconds into the game before hold notes appear
+HOLD_NOTE_CHANCE = 0.2           # chance a note spawns as a hold note, once unlocked
+HOLD_MIN_DURATION = 0.5          # shortest hold, in seconds
+HOLD_MAX_DURATION = 5.0          # longest hold, in seconds
+HOLD_PRESS_SHARE = 0.5           # fraction of the normal hit points awarded on press
+HOLD_COMPLETE_BONUS = 1.2        # full-hold total, as a multiple of a normal hit
 
 FPS = 60
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Helpers
 # ─────────────────────────────────────────────────────────────────────────────
-
-
-def wrap(x, y):
-    """The screen has no edges — fly off one side, come back on the other."""
-    return x % WIDTH, y % HEIGHT
-
-
-def draw_shape(surface, points, color=None, width=None):
-    """Draw a closed outline through `points`."""
-    pygame.draw.lines(
-        surface,
-        color or LINE_COLOR,
-        True,
-        points,
-        width or LINE_WIDTH,
-    )
-
 
 _fonts = {}
 
@@ -99,173 +89,77 @@ def draw_text(surface, text, pos, size=24, color=None, align="left"):
     surface.blit(image, rect)
 
 
+def lane_x(lane_index):
+    """The x position of a lane, evenly spaced across the screen."""
+    spacing = WIDTH / (len(LANES) + 1)
+    return spacing * (lane_index + 1)
+
+
+def format_time(seconds):
+    minutes = int(seconds) // 60
+    secs = int(seconds) % 60
+    return f"{minutes}:{secs:02d}"
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  Things in the game
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class Ship:
-    # The ship outline, drawn nose-first. Change these to reshape your ship.
-    SHAPE = [(1.0, 0.0), (-0.7, 0.65), (-0.4, 0.0), (-0.7, -0.65)]
-    FLAME = [(-0.45, 0.28), (-1.15, 0.0), (-0.45, -0.28)]
+class Note:
+    def __init__(self, lane_index):
+        self.lane = lane_index
+        self.x = lane_x(lane_index)
+        self.y = -NOTE_RADIUS
 
-    def __init__(self):
-        self.reset()
+    def update(self, dt):
+        self.y += NOTE_SPEED * dt
 
-    def reset(self):
-        self.x = WIDTH / 2
-        self.y = HEIGHT / 2
-        self.vx = 0.0
-        self.vy = 0.0
-        self.angle = -90.0          # pointing up
-        self.thrusting = False
-        self.invuln = SHIP_INVULN_TIME
-        self.radius = SHIP_SIZE * 0.7
+    def distance_to_target(self):
+        return abs(self.y - TARGET_Y)
 
-    def update(self, dt, keys):
-        turning = 0
-        if keys[pygame.K_LEFT] or keys[pygame.K_a]:
-            turning -= 1
-        if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
-            turning += 1
-        self.angle += turning * SHIP_TURN_SPEED * dt
+    def draw(self, surface):
+        color = LANES[self.lane]["color"]
+        pygame.draw.circle(surface, color, (int(self.x), int(self.y)), NOTE_RADIUS)
 
-        self.thrusting = keys[pygame.K_UP] or keys[pygame.K_w]
-        if self.thrusting:
-            radians = math.radians(self.angle)
-            self.vx += math.cos(radians) * SHIP_THRUST * dt
-            self.vy += math.sin(radians) * SHIP_THRUST * dt
 
-        # Drag, then speed limit.
-        damping = max(0.0, 1.0 - SHIP_DRAG * dt)
-        self.vx *= damping
-        self.vy *= damping
-        speed = math.hypot(self.vx, self.vy)
-        if speed > SHIP_MAX_SPEED:
-            self.vx = self.vx / speed * SHIP_MAX_SPEED
-            self.vy = self.vy / speed * SHIP_MAX_SPEED
+class HoldNote(Note):
+    def __init__(self, lane_index, duration):
+        super().__init__(lane_index)
+        self.duration = duration
+        self.started = False     # key pressed while in the hit window yet?
+        self.finished = False    # released early or completed
+        self.held_elapsed = 0.0
+        self.press_points = 0    # timing points earned the moment it was pressed
 
-        self.x, self.y = wrap(self.x + self.vx * dt, self.y + self.vy * dt)
-        self.invuln = max(0.0, self.invuln - dt)
-
-    def points(self, shape, scale=SHIP_SIZE):
-        radians = math.radians(self.angle)
-        cos_a, sin_a = math.cos(radians), math.sin(radians)
-        return [
-            (
-                self.x + (px * cos_a - py * sin_a) * scale,
-                self.y + (px * sin_a + py * cos_a) * scale,
-            )
-            for px, py in shape
-        ]
-
-    def draw(self, surface, time_alive):
-        # Blink while invulnerable so you can tell you're safe.
-        if self.invuln > 0 and int(time_alive * 12) % 2 == 0:
-            return
-        draw_shape(surface, self.points(self.SHAPE))
-        if self.thrusting and random.random() < 0.7:
-            draw_shape(surface, self.points(self.FLAME))
-
-    def nose(self):
-        radians = math.radians(self.angle)
-        return (
-            self.x + math.cos(radians) * SHIP_SIZE,
-            self.y + math.sin(radians) * SHIP_SIZE,
+    def draw(self, surface):
+        color = LANES[self.lane]["color"]
+        remaining = self.duration - self.held_elapsed
+        tail_length = remaining * NOTE_SPEED
+        pygame.draw.line(
+            surface, color, (self.x, self.y), (self.x, self.y - tail_length), NOTE_RADIUS
         )
+        super().draw(surface)
 
 
-class Bullet:
-    def __init__(self, x, y, angle):
-        radians = math.radians(angle)
+class Popup:
+    """A little floating score number, like "+87" or "MISS"."""
+
+    def __init__(self, x, y, text, color):
         self.x = x
         self.y = y
-        self.vx = math.cos(radians) * BULLET_SPEED
-        self.vy = math.sin(radians) * BULLET_SPEED
-        self.life = BULLET_LIFETIME
-        self.radius = 2
-
-    def update(self, dt):
-        self.x, self.y = wrap(self.x + self.vx * dt, self.y + self.vy * dt)
-        self.life -= dt
-
-    def draw(self, surface):
-        pygame.draw.rect(surface, LINE_COLOR, (self.x - 1.5, self.y - 1.5, 3, 3), 0)
-
-
-class Rock:
-    def __init__(self, x, y, size):
-        self.x = x
-        self.y = y
-        self.size = size
-        self.radius = ROCK_RADIUS[size]
-
-        angle = random.uniform(0, math.tau)
-        speed = ROCK_SPEED[size] * random.uniform(0.7, 1.3)
-        self.vx = math.cos(angle) * speed
-        self.vy = math.sin(angle) * speed
-        self.spin = random.uniform(-60, 60)
-        self.angle = random.uniform(0, 360)
-
-        # A lumpy circle with a few deep notches — this is what makes rocks look
-        # like rocks instead of like blobs.
-        corners = random.randint(9, 12)
-        self.shape = []
-        for i in range(corners):
-            theta = math.tau * i / corners
-            jitter = random.uniform(0.78, 1.1)
-            if random.random() < 0.25:
-                jitter = random.uniform(0.42, 0.58)   # a chunk taken out
-            self.shape.append((math.cos(theta) * jitter, math.sin(theta) * jitter))
-
-    def update(self, dt):
-        self.x, self.y = wrap(self.x + self.vx * dt, self.y + self.vy * dt)
-        self.angle += self.spin * dt
-
-    def draw(self, surface):
-        radians = math.radians(self.angle)
-        cos_a, sin_a = math.cos(radians), math.sin(radians)
-        points = [
-            (
-                self.x + (px * cos_a - py * sin_a) * self.radius,
-                self.y + (px * sin_a + py * cos_a) * self.radius,
-            )
-            for px, py in self.shape
-        ]
-        draw_shape(surface, points)
-
-    def split(self):
-        """Break into smaller rocks. Smallest rocks just vanish."""
-        if self.size <= 1:
-            return []
-        return [Rock(self.x, self.y, self.size - 1) for _ in range(ROCK_SPLIT_COUNT)]
-
-
-class Debris:
-    """A little burst of lines when something is destroyed."""
-
-    def __init__(self, x, y, count=8):
-        self.pieces = []
-        for _ in range(count):
-            angle = random.uniform(0, math.tau)
-            speed = random.uniform(40, 170)
-            self.pieces.append(
-                [x, y, math.cos(angle) * speed, math.sin(angle) * speed]
-            )
+        self.text = text
+        self.color = color
         self.life = 0.6
 
     def update(self, dt):
-        for piece in self.pieces:
-            piece[0] += piece[2] * dt
-            piece[1] += piece[3] * dt
+        self.y -= 60 * dt
         self.life -= dt
 
     def draw(self, surface):
-        for x, y, vx, vy in self.pieces:
-            scale = 0.03
-            pygame.draw.line(
-                surface, LINE_COLOR, (x, y), (x - vx * scale, y - vy * scale), 1
-            )
+        alpha_size = 26
+        draw_text(surface, self.text, (self.x, self.y), size=alpha_size,
+                  color=self.color, align="center")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -273,123 +167,173 @@ class Debris:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def collides(a, b):
-    return math.hypot(a.x - b.x, a.y - b.y) < a.radius + b.radius
-
-
 class Game:
     def __init__(self):
         self.start_new_game()
 
     def start_new_game(self):
-        self.ship = Ship()
-        self.bullets = []
-        self.rocks = []
-        self.debris = []
+        self.notes = []
+        self.popups = []
         self.score = 0
-        self.lives = STARTING_LIVES
-        self.wave = 0
+        self.misses = 0
+        self.spawn_timer = 0.0
         self.time_alive = 0.0
-        self.fire_timer = 0.0
         self.over = False
         reset_score()
         submit_score(0)
-        self.next_wave()
 
-    def next_wave(self):
-        self.wave += 1
-        count = STARTING_ROCKS + self.wave - 1
-        for _ in range(count):
-            # Spawn away from the middle so rocks don't appear on top of the ship.
-            while True:
-                x = random.uniform(0, WIDTH)
-                y = random.uniform(0, HEIGHT)
-                if math.hypot(x - WIDTH / 2, y - HEIGHT / 2) > 180:
-                    break
-            self.rocks.append(Rock(x, y, 3))
-
-    def shoot(self):
-        if self.fire_timer > 0 or len(self.bullets) >= MAX_BULLETS:
-            return
-        nose_x, nose_y = self.ship.nose()
-        self.bullets.append(Bullet(nose_x, nose_y, self.ship.angle))
-        self.fire_timer = BULLET_COOLDOWN
-
-    def add_score(self, points):
-        self.score += points
+    def add_score(self, delta):
+        self.score = max(0, self.score + delta)
         submit_score(self.score)
 
-    def lose_a_life(self):
-        self.debris.append(Debris(self.ship.x, self.ship.y, 12))
-        self.lives -= 1
-        if self.lives <= 0:
+    def register_miss(self, lane_index):
+        self.add_score(-MISS_PENALTY)
+        self.misses += 1
+        x = lane_x(lane_index)
+        self.popups.append(Popup(x, TARGET_Y - TARGET_RADIUS - 10, "MISS", (255, 90, 90)))
+        if self.misses >= MAX_MISSES:
             self.over = True
             game_over(self.score)
-        else:
-            self.ship.reset()
 
-    def update(self, dt, keys):
-        self.time_alive += dt
-        if self.over:
-            for burst in self.debris:
-                burst.update(dt)
-            self.debris = [d for d in self.debris if d.life > 0]
+    def try_hit(self, lane_index):
+        # Find the closest not-yet-hit note in this lane.
+        candidates = [n for n in self.notes if n.lane == lane_index and not getattr(n, "started", False)]
+        if not candidates:
+            return
+        closest = min(candidates, key=Note.distance_to_target)
+        distance = closest.distance_to_target()
+        if distance > HIT_WINDOW:
             return
 
-        self.fire_timer = max(0.0, self.fire_timer - dt)
-        self.ship.update(dt, keys)
-        if keys[pygame.K_SPACE]:
-            self.shoot()
+        timing_points = round(MAX_HIT_POINTS * (1 - distance / HIT_WINDOW))
+        color = LANES[lane_index]["color"]
 
-        for bullet in self.bullets:
-            bullet.update(dt)
-        self.bullets = [b for b in self.bullets if b.life > 0]
+        if isinstance(closest, HoldNote):
+            closest.started = True
+            closest.y = TARGET_Y
+            closest.press_points = timing_points
+            press_award = round(timing_points * HOLD_PRESS_SHARE)
+            self.add_score(press_award)
+            self.popups.append(Popup(closest.x, TARGET_Y - TARGET_RADIUS - 10, f"+{press_award}", color))
+        else:
+            self.notes.remove(closest)
+            self.add_score(timing_points)
+            self.popups.append(Popup(closest.x, TARGET_Y - TARGET_RADIUS - 10, f"+{timing_points}", color))
 
-        for rock in self.rocks:
-            rock.update(dt)
-
-        for burst in self.debris:
-            burst.update(dt)
-        self.debris = [d for d in self.debris if d.life > 0]
-
-        # Bullets vs rocks.
-        surviving_rocks = []
-        for rock in self.rocks:
-            hit_by = None
-            for bullet in self.bullets:
-                if collides(rock, bullet):
-                    hit_by = bullet
-                    break
-            if hit_by is None:
-                surviving_rocks.append(rock)
+    def lane_blocked(self, lane_index, spawn_y):
+        """True if a new note at spawn_y would land inside a hold note's tail."""
+        for note in self.notes:
+            if note.lane != lane_index or not isinstance(note, HoldNote) or note.finished:
                 continue
-            self.bullets.remove(hit_by)
-            self.add_score(ROCK_POINTS[rock.size])
-            self.debris.append(Debris(rock.x, rock.y))
-            surviving_rocks.extend(rock.split())
-        self.rocks = surviving_rocks
+            remaining = note.duration - note.held_elapsed
+            tail_top = note.y - remaining * NOTE_SPEED - NOTE_RADIUS
+            tail_bottom = note.y + NOTE_RADIUS
+            if tail_top <= spawn_y <= tail_bottom:
+                return True
+        return False
 
-        # Rocks vs ship.
-        if self.ship.invuln <= 0:
-            for rock in self.rocks:
-                if collides(rock, self.ship):
-                    self.lose_a_life()
-                    break
+    def hit_window_interval(self, note):
+        """When (relative to right now, in seconds) a note needs the player's
+        attention — the span during which it can be pressed, or a hold that's
+        already started and still needs holding."""
+        if isinstance(note, HoldNote) and note.started:
+            return 0.0, note.duration - note.held_elapsed
+        entry_time = (TARGET_Y - HIT_WINDOW - note.y) / NOTE_SPEED
+        exit_time = (TARGET_Y + HIT_WINDOW - note.y) / NOTE_SPEED
+        return entry_time, exit_time
 
-        if not self.rocks:
-            self.next_wave()
+    def update_holds(self, dt, held_down):
+        surviving = []
+        for note in self.notes:
+            if isinstance(note, HoldNote) and note.started and not note.finished:
+                if not held_down[LANES[note.lane]["key"]]:
+                    note.finished = True
+                    continue
+                note.held_elapsed += dt
+                if note.held_elapsed >= note.duration:
+                    full_value = round(note.press_points * HOLD_COMPLETE_BONUS)
+                    press_award = round(note.press_points * HOLD_PRESS_SHARE)
+                    bonus = full_value - press_award
+                    color = LANES[note.lane]["color"]
+                    self.add_score(bonus)
+                    self.popups.append(Popup(note.x, TARGET_Y - TARGET_RADIUS - 34, f"+{bonus} HELD!", color))
+                    note.finished = True
+                    continue
+            surviving.append(note)
+        self.notes = surviving
+
+    def update(self, dt, pressed_keys, held_down):
+        if self.over:
+            for popup in self.popups:
+                popup.update(dt)
+            self.popups = [p for p in self.popups if p.life > 0]
+            return
+
+        self.time_alive += dt
+
+        for lane_index, lane in enumerate(LANES):
+            if lane["key"] in pressed_keys:
+                self.try_hit(lane_index)
+
+        self.spawn_timer -= dt
+        if self.spawn_timer <= 0:
+            spawn_y = -NOTE_RADIUS
+            new_start = (TARGET_Y - HIT_WINDOW - spawn_y) / NOTE_SPEED
+            new_end = (TARGET_Y + HIT_WINDOW - spawn_y) / NOTE_SPEED
+
+            chords_locked = self.time_alive < CHORD_FREE_TIME
+            would_overlap = chords_locked and any(
+                new_start <= end and start <= new_end
+                for start, end in (self.hit_window_interval(n) for n in self.notes)
+            )
+
+            if not would_overlap:
+                lane_order = list(range(len(LANES)))
+                random.shuffle(lane_order)
+                lane_index = next((l for l in lane_order if not self.lane_blocked(l, spawn_y)), None)
+
+                if lane_index is not None:
+                    if self.time_alive >= HOLD_NOTES_START_AT and random.random() < HOLD_NOTE_CHANCE:
+                        duration = random.uniform(HOLD_MIN_DURATION, HOLD_MAX_DURATION)
+                        self.notes.append(HoldNote(lane_index, duration))
+                    else:
+                        self.notes.append(Note(lane_index))
+            self.spawn_timer = NOTE_SPAWN_INTERVAL
+
+        for note in self.notes:
+            if not (isinstance(note, HoldNote) and note.started):
+                note.update(dt)
+
+        self.update_holds(dt, held_down)
+
+        surviving = []
+        for note in self.notes:
+            if isinstance(note, HoldNote) and note.started:
+                surviving.append(note)
+                continue
+            if note.y - TARGET_Y > HIT_WINDOW:
+                self.register_miss(note.lane)
+            else:
+                surviving.append(note)
+        self.notes = surviving
+
+        for popup in self.popups:
+            popup.update(dt)
+        self.popups = [p for p in self.popups if p.life > 0]
 
     def draw(self, surface):
         surface.fill(BACKGROUND)
 
-        for rock in self.rocks:
-            rock.draw(surface)
-        for bullet in self.bullets:
-            bullet.draw(surface)
-        for burst in self.debris:
-            burst.draw(surface)
-        if not self.over:
-            self.ship.draw(surface, self.time_alive)
+        for lane_index, lane in enumerate(LANES):
+            x = lane_x(lane_index)
+            pygame.draw.circle(surface, lane["color"], (int(x), TARGET_Y), TARGET_RADIUS, 3)
+            draw_text(surface, lane["label"], (x, TARGET_Y + TARGET_RADIUS + 8),
+                      size=22, color=lane["color"], align="center")
+
+        for note in self.notes:
+            note.draw(surface)
+        for popup in self.popups:
+            popup.draw(surface)
 
         self.draw_hud(surface)
 
@@ -401,19 +345,10 @@ class Game:
                       size=24, align="center")
 
     def draw_hud(self, surface):
-        draw_text(surface, str(self.score), (28, 22), size=48)
-
-        # Lives, drawn as little ships.
-        for i in range(self.lives):
-            x = 34 + i * 30
-            y = 90
-            points = [
-                (x + (px * 0.0 - py * -1.0) * 11, y + (px * -1.0 + py * 0.0) * 11)
-                for px, py in Ship.SHAPE
-            ]
-            draw_shape(surface, points, width=2)
-
-        draw_text(surface, f"WAVE {self.wave}", (WIDTH - 28, 26), size=24, align="right")
+        draw_text(surface, format_time(self.time_alive), (28, 22), size=32)
+        draw_text(surface, str(self.score), (28, 62), size=48)
+        draw_text(surface, f"MISSES {self.misses}/{MAX_MISSES}", (WIDTH - 28, 26),
+                  size=24, align="right")
 
 
 async def main():
@@ -426,18 +361,21 @@ async def main():
     running = True
 
     while running:
-        dt = min(clock.tick(FPS) / 1000.0, 0.05)   # cap dt so lag can't teleport things
+        dt = min(clock.tick(FPS) / 1000.0, 0.05)   # cap dt so lag can't skip things
 
+        pressed_this_frame = set()
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
             elif event.type == pygame.KEYDOWN:
+                pressed_this_frame.add(event.key)
                 if event.key == pygame.K_r and game.over:
                     game.start_new_game()
                 # ESC is not handled here on purpose — in Islands World it means
                 # "leave this island", and the world itself takes care of that.
 
-        game.update(dt, pygame.key.get_pressed())
+        held_down = pygame.key.get_pressed()
+        game.update(dt, pressed_this_frame, held_down)
         game.draw(screen)
         pygame.display.flip()
 
