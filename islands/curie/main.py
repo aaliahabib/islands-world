@@ -52,10 +52,20 @@ PLAYER_SHORTS = (30, 30, 35)
 PLAYER_HAIR = (15, 15, 15)
 PLAYER_HEADBAND = (200, 30, 30)
 PLAYER_BANDAGE = (235, 227, 210)
+PLAYER_SHOES = (40, 40, 40)
 
 ROBOT_SKIN = (214, 176, 150)
 ROBOT_METAL = (140, 148, 158)
 ROBOT_EYE = (220, 40, 40)
+ROBOT_CLOTHING = (92, 68, 52)      # the vest it wears over its chest
+ROBOT_PANTS = (55, 58, 66)
+ROBOT_BOOTS = (25, 25, 28)
+
+PIXEL_SIZE = 5                     # size of one "pixel" block in the sprites
+
+SUN_COLOR = (255, 221, 89)
+CLOUD_COLOR = (255, 255, 255)
+GRASS_DARK = (54, 122, 54)
 
 PLAYER_MAX_HEALTH = 100
 ROBOT_MAX_HEALTH = 100
@@ -107,9 +117,58 @@ def draw_bar(surface, x, y, width, height, ratio, color, back_color=(40, 40, 40)
     pygame.draw.rect(surface, LINE_COLOR, (x, y, width, height), 2)
 
 
+def draw_pixel_sprite(surface, blocks, palette, cx, top_y, facing, total_w_units, v_scale=1.0):
+    """Draw a little pixel-art character. `blocks` is a list of
+    (grid_x, grid_y, grid_width, grid_height, palette_key) rectangles, all
+    measured in PIXEL_SIZE units and assuming the character faces right."""
+    for gx, gy, gw, gh, key in blocks:
+        if facing == -1:
+            gx = total_w_units - gx - gw
+        x = cx - (total_w_units * PIXEL_SIZE) / 2 + gx * PIXEL_SIZE
+        y = top_y + gy * PIXEL_SIZE * v_scale
+        pygame.draw.rect(surface, palette[key], (x, y, gw * PIXEL_SIZE, gh * PIXEL_SIZE * v_scale))
+
+
+def draw_cloud(surface, x, y):
+    for dx, dy, r in [(-24, 4, 20), (0, -6, 26), (26, 4, 20), (50, 6, 16)]:
+        pygame.draw.circle(surface, CLOUD_COLOR, (x + dx, y + dy), r)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  Fighters
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+PLAYER_UNITS_W = 14
+PLAYER_UNITS_H = 20
+
+PLAYER_PALETTE = {
+    "hair": PLAYER_HAIR,
+    "skin": PLAYER_SKIN,
+    "band": PLAYER_HEADBAND,
+    "shorts": PLAYER_SHORTS,
+    "bandage": PLAYER_BANDAGE,
+    "shoes": PLAYER_SHOES,
+}
+
+
+def build_player_blocks(attacking, attack_type):
+    front_arm_w = 8 if attacking and attack_type == "punch" else 2
+    front_leg_w = 9 if attacking and attack_type == "kick" else 3
+    return [
+        (4, 0, 6, 2, "hair"),
+        (4, 2, 6, 3, "skin"),
+        (4, 3, 6, 1, "band"),
+        (3, 5, 8, 1, "skin"),
+        (3, 6, 8, 5, "skin"),
+        (3, 11, 8, 2, "shorts"),
+        (1, 7, 2, 4, "bandage"),
+        (11, 7, front_arm_w, 4, "bandage"),
+        (3, 13, 3, 6, "skin"),
+        (8, 13, front_leg_w, 6, "skin"),
+        (3, 19, 3, 1, "shoes"),
+        (8, 19, 3, 1, "shoes"),
+    ]
 
 
 class Player:
@@ -180,33 +239,38 @@ class Player:
         return False
 
     def draw(self, surface):
-        scale = 0.62 if self.crouching else 1.0
-        body_h = 100 * scale
-        top = GROUND_Y - body_h - self.air_height
-        cx = self.x
-        f = self.facing
+        v_scale = 0.62 if self.crouching else 1.0
+        top_y = GROUND_Y - PLAYER_UNITS_H * PIXEL_SIZE * v_scale - self.air_height
+        blocks = build_player_blocks(self.attack_timer > 0, self.attack_type)
+        draw_pixel_sprite(surface, blocks, PLAYER_PALETTE, self.x, top_y, self.facing, PLAYER_UNITS_W, v_scale)
 
-        pygame.draw.rect(surface, PLAYER_SKIN, (cx - 16, top + body_h * 0.62, 12, body_h * 0.38))
-        pygame.draw.rect(surface, PLAYER_SKIN, (cx + 4, top + body_h * 0.62, 12, body_h * 0.38))
 
-        pygame.draw.rect(surface, PLAYER_SKIN, (cx - 17, top + body_h * 0.22, 34, body_h * 0.42))
-        pygame.draw.rect(surface, PLAYER_SHORTS, (cx - 17, top + body_h * 0.58, 34, body_h * 0.14))
+ROBOT_UNITS_W = 14
+ROBOT_UNITS_H = 20
 
-        arm_len = 34 if self.attack_timer > 0 and self.attack_type == "punch" else 16
-        arm_y = top + body_h * 0.32
-        pygame.draw.rect(surface, PLAYER_BANDAGE, (cx + f * 6, arm_y, f * arm_len, 9))
+ROBOT_PALETTE = {
+    "skin": ROBOT_SKIN,
+    "clothing": ROBOT_CLOTHING,
+    "pants": ROBOT_PANTS,
+    "boots": ROBOT_BOOTS,
+}
 
-        if self.attack_timer > 0 and self.attack_type == "kick":
-            pygame.draw.rect(surface, PLAYER_SKIN, (cx + f * 6, top + body_h * 0.74, f * 40, 10))
 
-        head_r = body_h * 0.16
-        head_center = (cx, top + head_r)
-        pygame.draw.circle(surface, PLAYER_SKIN, head_center, head_r)
-        pygame.draw.rect(surface, PLAYER_HAIR, (cx - head_r, top, head_r * 2, head_r * 1.1))
-        pygame.draw.rect(
-            surface, PLAYER_HEADBAND,
-            (cx - head_r, top + head_r * 0.75, head_r * 2, head_r * 0.28),
-        )
+def build_robot_blocks(attacking):
+    front_arm_w = 8 if attacking else 2
+    return [
+        (4, 0, 6, 4, "skin"),
+        (5, 4, 4, 1, "skin"),
+        (2, 6, 10, 5, "clothing"),
+        (3, 5, 8, 1, "skin"),
+        (1, 6, 2, 5, "skin"),
+        (11, 6, front_arm_w, 5, "skin"),
+        (3, 11, 8, 2, "pants"),
+        (3, 13, 3, 5, "pants"),
+        (8, 13, 3, 5, "pants"),
+        (3, 18, 3, 2, "boots"),
+        (8, 18, 3, 2, "boots"),
+    ]
 
 
 class Robot:
@@ -246,26 +310,17 @@ class Robot:
                 self.attack_registered = False
 
     def draw(self, surface):
-        body_h = 105
-        top = GROUND_Y - body_h
-        cx = self.x
-        f = self.facing
+        top_y = GROUND_Y - ROBOT_UNITS_H * PIXEL_SIZE
+        blocks = build_robot_blocks(self.attack_timer > 0)
+        palette = ROBOT_PALETTE
         flash = self.stun_timer > 0 and int(self.stun_timer * 10) % 2 == 0
-        skin = ROBOT_METAL if flash else ROBOT_SKIN
+        if flash:
+            palette = dict(ROBOT_PALETTE, skin=ROBOT_METAL)
+        draw_pixel_sprite(surface, blocks, palette, self.x, top_y, self.facing, ROBOT_UNITS_W)
 
-        pygame.draw.rect(surface, skin, (cx - 16, top + body_h * 0.60, 12, body_h * 0.40))
-        pygame.draw.rect(surface, skin, (cx + 4, top + body_h * 0.60, 12, body_h * 0.40))
-        pygame.draw.rect(surface, skin, (cx - 18, top + body_h * 0.20, 36, body_h * 0.42))
-
-        arm_len = 34 if self.attack_timer > 0 else 16
-        pygame.draw.rect(surface, skin, (cx + f * 6, top + body_h * 0.30, f * arm_len, 10))
-
-        head_r = body_h * 0.16
-        head_center = (cx, top + head_r)
-        pygame.draw.circle(surface, skin, head_center, head_r)
-        pygame.draw.circle(
-            surface, ROBOT_EYE, (head_center[0] + f * head_r * 0.4, head_center[1]), head_r * 0.22
-        )
+        eye_x = self.x + self.facing * 8
+        eye_y = top_y + PIXEL_SIZE * 2
+        pygame.draw.circle(surface, ROBOT_EYE, (eye_x, eye_y), 5)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -326,7 +381,13 @@ class Game:
 
     def draw(self, surface):
         surface.fill(SKY_COLOR)
+        pygame.draw.circle(surface, SUN_COLOR, (WIDTH - 120, 100), 46)
+        for cx, cy in [(150, 90), (420, 60), (650, 110)]:
+            draw_cloud(surface, cx, cy)
+
         pygame.draw.rect(surface, GROUND_COLOR, (0, GROUND_Y + 10, WIDTH, HEIGHT - GROUND_Y))
+        for gx in range(10, WIDTH, 16):
+            pygame.draw.line(surface, GRASS_DARK, (gx, GROUND_Y + 10), (gx - 4, GROUND_Y), 2)
 
         self.robot.draw(surface)
         self.player.draw(surface)
