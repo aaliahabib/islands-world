@@ -61,6 +61,21 @@ GUARD_DODGE_TIME = 0.22          # seconds the dodge burst lasts
 GUARD_DODGE_COOLDOWN = 0.6       # seconds before you can dodge again
 GUARD_HAT_COLOR = (30, 40, 110)  # colour of the guard's security hat
 GUARD_WALK_SPEED = 9.0           # how fast his legs swing while walking
+GUARD_ATTACK_REACH = GUARD_SIZE * 1.4     # how far the weapon hits
+GUARD_ATTACK_COOLDOWN = 0.3               # seconds between attacks
+
+ANIMAL_ORDER = ["lion", "gorilla", "crocodile", "elephant", "bull"]   # fight order
+ANIMAL_ICON_COLOR = (255, 255, 255)
+ANIMAL_ICON_SIZE = 22            # radius of each icon in the top-right roster
+
+LION_COLOR = (200, 140, 40)
+LION_SIZE = 40                   # how big the lion is
+LION_HEALTH = 4                  # how many hits it takes to beat it
+LION_SPEED = 320                 # how fast it chases the guard — faster than him
+LION_STOP_RANGE = GUARD_SIZE * 1.9        # how close it gets before it stops to bite
+LION_WINDUP_TIME = 1.0           # seconds it pauses before biting
+LION_RECOVER_TIME = 0.5          # seconds it waits after a bite before chasing again
+LION_HIT_POINTS = 25             # score for landing one hit on it
 
 FPS = 60
 
@@ -94,6 +109,58 @@ def draw_text(surface, text, pos, size=24, color=None, align="left"):
     surface.blit(image, rect)
 
 
+def draw_animal_icon(surface, name, cx, cy, r, color=None):
+    """A simple line-icon for one of the five animals, centred at (cx, cy)."""
+    color = color or ANIMAL_ICON_COLOR
+
+    if name == "lion":
+        # A jagged ring of fur around a round face — reads as a mane.
+        spikes = 12
+        points = []
+        for i in range(spikes * 2):
+            theta = math.tau * i / (spikes * 2)
+            radius = r if i % 2 == 0 else r * 0.68
+            points.append((cx + math.cos(theta) * radius, cy + math.sin(theta) * radius))
+        pygame.draw.polygon(surface, color, points, 2)
+        pygame.draw.circle(surface, color, (int(cx), int(cy)), int(r * 0.42), 2)
+        pygame.draw.circle(surface, color, (int(cx - r * 0.15), int(cy - r * 0.08)), 2, 0)
+        pygame.draw.circle(surface, color, (int(cx + r * 0.15), int(cy - r * 0.08)), 2, 0)
+
+    elif name == "gorilla":
+        pygame.draw.circle(surface, color, (int(cx), int(cy - r * 0.55)), int(r * 0.4), 2)
+        pygame.draw.polygon(surface, color, [
+            (cx - r * 0.45, cy - r * 0.2), (cx + r * 0.45, cy - r * 0.2),
+            (cx + r * 0.65, cy + r * 0.55), (cx - r * 0.65, cy + r * 0.55),
+        ], 2)
+        pygame.draw.line(surface, color, (cx - r * 0.5, cy - r * 0.1), (cx - r * 0.85, cy + r * 0.7), 3)
+        pygame.draw.line(surface, color, (cx + r * 0.5, cy - r * 0.1), (cx + r * 0.85, cy + r * 0.7), 3)
+
+    elif name == "crocodile":
+        pygame.draw.ellipse(surface, color, (cx - r, cy - r * 0.28, r * 1.5, r * 0.56), 2)
+        pygame.draw.polygon(surface, color, [
+            (cx + r * 0.45, cy - r * 0.16), (cx + r * 1.1, cy), (cx + r * 0.45, cy + r * 0.16),
+        ], 2)
+        for i in range(3):
+            x = cx + r * 0.55 + i * r * 0.18
+            pygame.draw.line(surface, color, (x, cy - r * 0.05), (x + r * 0.09, cy + r * 0.1), 2)
+        pygame.draw.circle(surface, color, (int(cx - r * 0.25), int(cy - r * 0.28)), 2, 0)
+
+    elif name == "elephant":
+        pygame.draw.circle(surface, color, (int(cx - r * 0.05), int(cy - r * 0.1)), int(r * 0.42), 2)
+        pygame.draw.circle(surface, color, (int(cx - r * 0.55), int(cy - r * 0.15)), int(r * 0.4), 2)
+        pygame.draw.lines(surface, color, False, [
+            (cx + r * 0.28, cy + r * 0.15), (cx + r * 0.38, cy + r * 0.5),
+            (cx + r * 0.15, cy + r * 0.7), (cx - r * 0.05, cy + r * 0.55),
+        ], 3)
+
+    elif name == "bull":
+        pygame.draw.circle(surface, color, (int(cx), int(cy + r * 0.1)), int(r * 0.45), 2)
+        pygame.draw.arc(surface, color, (cx - r * 1.1, cy - r * 0.9, r * 1.0, r * 1.0), 0.3, 2.6, 3)
+        pygame.draw.arc(surface, color, (cx + r * 0.1, cy - r * 0.9, r * 1.0, r * 1.0), 0.5, 2.8, 3)
+        pygame.draw.circle(surface, color, (int(cx - r * 0.18), int(cy)), 2, 0)
+        pygame.draw.circle(surface, color, (int(cx + r * 0.18), int(cy)), 2, 0)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  Things in the game
 # ─────────────────────────────────────────────────────────────────────────────
@@ -119,7 +186,10 @@ class Guard:
         self.dodge_cooldown = 0.0
         self.dodge_vx = 0.0
         self.attack_timer = 0.0
+        self.attack_cooldown = 0.0
         self.r_was_down = False
+        self.e_was_down = False
+        self.did_attack = False
         self.walk_phase = 0.0
         self.walking = False
 
@@ -130,6 +200,15 @@ class Guard:
     def update(self, dt, keys):
         self.dodge_cooldown = max(0.0, self.dodge_cooldown - dt)
         self.attack_timer = max(0.0, self.attack_timer - dt)
+        self.attack_cooldown = max(0.0, self.attack_cooldown - dt)
+
+        self.did_attack = False
+        e_down = keys[pygame.K_e]
+        if e_down and not self.e_was_down and self.attack_cooldown <= 0:
+            self.attack_timer = 0.18
+            self.attack_cooldown = GUARD_ATTACK_COOLDOWN
+            self.did_attack = True
+        self.e_was_down = e_down
 
         r_down = keys[pygame.K_r]
         if r_down and not self.r_was_down and self.dodge_cooldown <= 0:
@@ -170,9 +249,6 @@ class Guard:
             self.vy = 0.0
             self.on_ground = True
 
-    def attack(self):
-        self.attack_timer = 0.18
-
     def draw(self, surface):
         color = (255, 255, 120) if self.dodging else LINE_COLOR
         flip = self.facing
@@ -209,11 +285,88 @@ class Guard:
                           (head_cx - head_r * 0.85, head_cy - head_r * 1.35, head_r * 1.7, head_r * 0.8))
 
         if self.attack_timer > 0:
-            tip_x = self.x + self.facing * GUARD_SIZE * 1.4
+            tip_x = self.x + self.facing * GUARD_ATTACK_REACH
             pygame.draw.line(
                 surface, (255, 210, 90),
                 (arm_x, arm_y), (tip_x, arm_y), 4,
             )
+
+
+class Lion:
+    """Chases the guard, stops when it gets close, pauses, then bites."""
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.x = LION_SIZE * 1.5   # starts over at the edge so the chase shows
+        self.y = GROUND_Y
+        self.health = LION_HEALTH
+        self.state = "approach"    # approach -> windup -> recover -> approach
+        self.timer = 0.0
+        self.facing = 1
+
+    def update(self, dt, guard):
+        """Returns True on the exact frame it bites."""
+        distance = abs(guard.x - self.x)
+        direction = 1 if guard.x >= self.x else -1
+
+        if self.state == "approach":
+            self.facing = direction
+            if distance <= LION_STOP_RANGE:
+                self.state = "windup"
+                self.timer = LION_WINDUP_TIME
+            else:
+                self.x += direction * LION_SPEED * dt
+            return False
+
+        if self.state == "windup":
+            self.timer -= dt
+            if self.timer <= 0:
+                self.state = "recover"
+                self.timer = LION_RECOVER_TIME
+                return True
+            return False
+
+        # recover
+        self.timer -= dt
+        if self.timer <= 0:
+            self.state = "approach"
+        return False
+
+    def draw(self, surface):
+        body_y = self.y - LION_SIZE * 0.5
+        body_rect = (self.x - LION_SIZE * 0.9, body_y - LION_SIZE * 0.4, LION_SIZE * 1.8, LION_SIZE * 0.8)
+        pygame.draw.ellipse(surface, LION_COLOR, body_rect, 3)
+
+        for dx in (-0.6, -0.2, 0.2, 0.6):
+            leg_x = self.x + dx * LION_SIZE
+            pygame.draw.line(surface, LION_COLOR, (leg_x, body_y + LION_SIZE * 0.3), (leg_x, self.y), 4)
+
+        tail_x = self.x - self.facing * LION_SIZE * 1.2
+        pygame.draw.line(surface, LION_COLOR,
+                          (self.x - self.facing * LION_SIZE * 0.8, body_y), (tail_x, body_y - LION_SIZE * 0.3), 3)
+
+        face_x = self.x + self.facing * LION_SIZE * 0.65
+        face_y = body_y - LION_SIZE * 0.05
+        draw_animal_icon(surface, "lion", face_x, face_y, LION_SIZE * 0.75, color=LION_COLOR)
+
+        if self.state == "windup":
+            # The mouth opens wide — the warning that a bite is coming.
+            mouth_x = face_x + self.facing * LION_SIZE * 0.35
+            pygame.draw.polygon(surface, (200, 30, 30), [
+                (mouth_x, face_y - LION_SIZE * 0.14),
+                (mouth_x + self.facing * LION_SIZE * 0.32, face_y),
+                (mouth_x, face_y + LION_SIZE * 0.14),
+            ])
+
+        bar_w, bar_h = LION_SIZE * 1.6, 8
+        bar_x = self.x - bar_w / 2
+        bar_y = body_y - LION_SIZE * 0.75
+        pygame.draw.rect(surface, (60, 60, 60), (bar_x, bar_y, bar_w, bar_h))
+        fraction = max(0.0, self.health / LION_HEALTH)
+        pygame.draw.rect(surface, (210, 40, 40), (bar_x, bar_y, bar_w * fraction, bar_h))
+        pygame.draw.rect(surface, LINE_COLOR, (bar_x, bar_y, bar_w, bar_h), 2)
 
 
 def draw_cage_background(surface):
@@ -251,23 +404,54 @@ class Game:
 
     def start_new_game(self):
         self.guard = Guard()
+        self.lion = Lion()
         self.score = 0
         self.over = False
+        self.remaining_animals = list(ANIMAL_ORDER)
         reset_score()
         submit_score(0)
+
+    def add_score(self, points):
+        self.score += points
+        submit_score(self.score)
+
+    def defeat_animal(self, name):
+        """Call this once an animal is beaten — its icon drops off the roster."""
+        if name in self.remaining_animals:
+            self.remaining_animals.remove(name)
+
+    def die(self):
+        self.over = True
+        game_over(self.score)
 
     def update(self, dt, keys):
         if self.over:
             return
         self.guard.update(dt, keys)
-        if keys[pygame.K_e]:
-            self.guard.attack()
+
+        if self.lion:
+            bit_now = self.lion.update(dt, self.guard)
+            if bit_now and not (self.guard.dodging or not self.guard.on_ground):
+                self.die()
+                return
+
+            if self.guard.did_attack:
+                dx = self.lion.x - self.guard.x
+                in_front = dx * self.guard.facing >= 0
+                if in_front and abs(dx) <= GUARD_ATTACK_REACH:
+                    self.lion.health -= 1
+                    self.add_score(LION_HIT_POINTS)
+                    if self.lion.health <= 0:
+                        self.defeat_animal("lion")
+                        self.lion = None
 
     def draw(self, surface):
         surface.fill(SKY_COLOR)
         draw_cage_background(surface)
         pygame.draw.rect(surface, GROUND_COLOR, (0, GROUND_Y, WIDTH, HEIGHT - GROUND_Y))
 
+        if self.lion:
+            self.lion.draw(surface)
         self.guard.draw(surface)
         self.draw_hud(surface)
 
@@ -278,6 +462,12 @@ class Game:
 
     def draw_hud(self, surface):
         draw_text(surface, str(self.score), (28, 22), size=48)
+
+        # One icon per animal still left to fight, top right, in order.
+        for i, name in enumerate(self.remaining_animals):
+            cx = WIDTH - 30 - i * (ANIMAL_ICON_SIZE * 2 + 14)
+            cy = 34
+            draw_animal_icon(surface, name, cx, cy, ANIMAL_ICON_SIZE)
 
 
 async def main():
