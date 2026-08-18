@@ -45,28 +45,26 @@ TITLE = "God Valley"
 WIDTH = 900                      # size of the game window
 HEIGHT = 700
 
-SKY_COLOR = (110, 140, 165)       # God Valley at dusk
-GROUND_COLOR = (196, 172, 122)
-PILLAR_COLOR = (150, 140, 128)
-ROCK_COLOR = (95, 82, 66)
+PAPER_COLOR = (250, 250, 245)     # the notebook-paper background
+GRID_COLOR = (222, 222, 214)      # faint graph-paper grid
+GRID_SPACING = 40
 
-LINE_COLOR = (255, 255, 255)      # text
+LINE_COLOR = (30, 30, 30)         # text, and the page border
 HAKI_COLOR = (150, 60, 220)       # ordinary sword swing
 ARMAMENT_COLOR = (25, 25, 30)     # Armament Haki, hardened and black
 CONQUEROR_COLOR = (110, 20, 150)  # Conqueror's Haki
 OBSERVATION_COLOR = (80, 210, 220)  # Observation Haki
-SPARK_COLOR = (255, 225, 90)      # hit sparks
-HULL_OUTLINE = (30, 18, 10)
+SPARK_COLOR = (240, 130, 20)      # hit sparks
+OUTLINE_COLOR = (40, 40, 40)
 
-PLAYER_BODY_COLOR = (210, 170, 60)    # Fafa
-PLAYER_SKIN_COLOR = (210, 160, 120)
-RIVAL_BODY_COLOR = (110, 45, 45)      # the rival haki master
-RIVAL_SKIN_COLOR = (200, 170, 150)
+PLAYER_LINE_COLOR = (20, 20, 20)      # Fafa's stick figure
+RIVAL_LINE_COLOR = (200, 40, 40)      # the rival haki master's stick figure
 
 LINE_WIDTH = 2
-FONT_NAME = None                  # None = pygame's built-in font
+STICK_LIMB_WIDTH = 4               # how thick the stick-figure lines are
+FONT_NAME = None                   # None = pygame's built-in font
 
-FIGHTER_SIZE = 20                 # how big Fafa and the rival are
+FIGHTER_SIZE = 26                 # how big Fafa and the rival are
 ARENA_MARGIN = 70                 # how close to the edges either fighter can go
 ARENA_TOP = 170
 
@@ -94,10 +92,26 @@ OBSERVATION_DURATION = 3.0
 
 CPU_MAX_HEALTH = 100
 CPU_SPEED = 155
-CPU_ATTACK_RANGE = 72
-CPU_WINDUP_TIME = 0.55             # how long the rival telegraphs before swinging
-CPU_RECOVER_TIME = 0.5
-CPU_DAMAGE = 10
+CPU_ENGAGE_RANGE = 80               # how close the rival closes in before attacking
+
+# Easy/Medium/Hard scale the rival's health, speed, damage, and how often it
+# picks the heavy swing over the jab. Change these to retune any difficulty.
+DIFFICULTIES = {
+    "easy": {"health": 0.8, "speed": 0.85, "damage": 0.7, "heavy_chance": 0.25},
+    "medium": {"health": 1.0, "speed": 1.0, "damage": 1.0, "heavy_chance": 0.4},
+    "hard": {"health": 1.25, "speed": 1.15, "damage": 1.3, "heavy_chance": 0.55},
+}
+DIFFICULTY_KEYS = {pygame.K_1: "easy", pygame.K_2: "medium", pygame.K_3: "hard"}
+
+CPU_JAB_WINDUP = 0.28                # how long it telegraphs before swinging
+CPU_JAB_RECOVER = 0.25
+CPU_JAB_RANGE = 60
+CPU_JAB_DAMAGE = 6
+
+CPU_HEAVY_WINDUP = 0.75
+CPU_HEAVY_RECOVER = 0.75
+CPU_HEAVY_RANGE = 85
+CPU_HEAVY_DAMAGE = 16
 
 HIT_FLASH_TIME = 0.3
 SHAKE_DURATION = 0.25
@@ -110,21 +124,11 @@ FPS = 60
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def rotated_points(x, y, angle, shape, scale):
-    """Turn a shape's local (-1..1) points into real points on screen."""
-    radians = math.radians(angle)
-    cos_a, sin_a = math.cos(radians), math.sin(radians)
-    return [
-        (x + (px * cos_a - py * sin_a) * scale, y + (px * sin_a + py * cos_a) * scale)
-        for px, py in shape
-    ]
-
-
-def draw_filled(surface, points, fill_color, outline_color=None, outline_width=2):
-    """Draw a solid shape, with an optional darker outline on top for definition."""
-    pygame.draw.polygon(surface, fill_color, points)
-    if outline_color:
-        pygame.draw.polygon(surface, outline_color, points, outline_width)
+def mirrored_points(x, y, flip_x, shape, scale):
+    """Turn a shape's local (-1..1) points into real points, flipped left/right
+    to face a direction — this is what keeps a stick figure standing upright
+    instead of tipping over to point at whatever it's facing."""
+    return [(x + px * scale * flip_x, y + py * scale) for px, py in shape]
 
 
 def draw_swing_arc(surface, x, y, angle, reach, arc_degrees, color, width=5):
@@ -146,7 +150,7 @@ def draw_bar(surface, x, y, w, h, ratio, color, from_right=False):
     fill_w = w * ratio
     fill_x = x + w - fill_w if from_right else x
     pygame.draw.rect(surface, color, (fill_x, y, fill_w, h))
-    pygame.draw.rect(surface, HULL_OUTLINE, (x, y, w, h), 2)
+    pygame.draw.rect(surface, OUTLINE_COLOR, (x, y, w, h), 2)
 
 
 _fonts = {}
@@ -219,20 +223,29 @@ class RingBurst:
 
 
 class Fighter:
-    """Shared bits between Fafa and the rival: a body, a health bar's worth of
-    state, and a sword swing."""
+    """Shared bits between Fafa and the rival: a stick-figure body, a health
+    bar's worth of state, and a sword swing."""
 
-    SHAPE = [(1.0, 0.0), (-0.7, 0.6), (-0.3, 0.0), (-0.7, -0.6)]
+    # A stick figure, standing upright with its head up (-y) and feet down
+    # (+y). Change these to reshape it — each pair is a line segment, as
+    # (start, end) local points.
+    HEAD = (0.0, -0.85)
+    LIMBS = [
+        [(0.0, -0.55), (0.0, 0.3)],        # spine
+        [(0.0, -0.35), (0.55, -0.05)],     # front arm, toward whoever it's facing
+        [(0.0, -0.35), (-0.45, 0.05)],     # back arm
+        [(0.0, 0.3), (0.4, 1.0)],          # front leg
+        [(0.0, 0.3), (-0.4, 1.0)],         # back leg
+    ]
 
-    def __init__(self, x, y, angle, max_health, body_color, skin_color):
+    def __init__(self, x, y, angle, max_health, line_color):
         self.x = x
         self.y = y
         self.angle = angle
         self.max_health = max_health
         self.health = max_health
         self.radius = FIGHTER_SIZE * 0.6
-        self.body_color = body_color
-        self.skin_color = skin_color
+        self.line_color = line_color
         self.hit_flash = 0.0
 
     def face(self, target_x, target_y):
@@ -243,17 +256,19 @@ class Fighter:
         self.y = max(ARENA_TOP, min(HEIGHT - ARENA_MARGIN, self.y))
 
     def draw_body(self, surface, flash_color):
-        color = flash_color if self.hit_flash > 0 and int(self.hit_flash * 20) % 2 == 0 else self.body_color
-        body = rotated_points(self.x, self.y, self.angle, self.SHAPE, FIGHTER_SIZE)
-        draw_filled(surface, body, color, HULL_OUTLINE, 1)
-        head_x, head_y = rotated_points(self.x, self.y, self.angle, [(0.55, 0.0)], FIGHTER_SIZE)[0]
-        pygame.draw.circle(surface, self.skin_color, (int(head_x), int(head_y)), 5)
+        color = flash_color if self.hit_flash > 0 and int(self.hit_flash * 20) % 2 == 0 else self.line_color
+        flip = 1 if math.cos(math.radians(self.angle)) >= 0 else -1
+        for limb in self.LIMBS:
+            p1, p2 = mirrored_points(self.x, self.y, flip, limb, FIGHTER_SIZE)
+            pygame.draw.line(surface, color, p1, p2, STICK_LIMB_WIDTH)
+        head_x, head_y = mirrored_points(self.x, self.y, flip, [self.HEAD], FIGHTER_SIZE)[0]
+        pygame.draw.circle(surface, color, (int(head_x), int(head_y)),
+                            int(FIGHTER_SIZE * 0.3), STICK_LIMB_WIDTH)
 
 
 class Player(Fighter):
     def __init__(self):
-        super().__init__(ARENA_MARGIN + 130, HEIGHT / 2, 0.0, PLAYER_MAX_HEALTH,
-                          PLAYER_BODY_COLOR, PLAYER_SKIN_COLOR)
+        super().__init__(ARENA_MARGIN + 130, HEIGHT / 2, 0.0, PLAYER_MAX_HEALTH, PLAYER_LINE_COLOR)
         self.attack_timer = 0.0
         self.armament_timer = 0.0
         self.observation_timer = 0.0
@@ -327,12 +342,17 @@ class Player(Fighter):
 
 
 class Rival(Fighter):
-    def __init__(self):
-        super().__init__(WIDTH - ARENA_MARGIN - 130, HEIGHT / 2, 180.0, CPU_MAX_HEALTH,
-                          RIVAL_BODY_COLOR, RIVAL_SKIN_COLOR)
+    def __init__(self, difficulty="medium"):
+        preset = DIFFICULTIES[difficulty]
+        max_health = round(CPU_MAX_HEALTH * preset["health"])
+        super().__init__(WIDTH - ARENA_MARGIN - 130, HEIGHT / 2, 180.0, max_health, RIVAL_LINE_COLOR)
+        self.speed = CPU_SPEED * preset["speed"]
+        self.damage_mult = preset["damage"]
+        self.heavy_chance = preset["heavy_chance"]
         self.state = "approach"
         self.state_timer = 0.0
         self.stun_timer = 0.0
+        self.attack_kind = None
 
     def stun(self, duration):
         self.stun_timer = duration
@@ -350,20 +370,24 @@ class Rival(Fighter):
         dist = math.hypot(player_x - self.x, player_y - self.y)
 
         if self.state == "approach":
-            if dist > CPU_ATTACK_RANGE * 0.8:
+            if dist > CPU_ENGAGE_RANGE:
                 radians = math.radians(self.angle)
-                self.x += math.cos(radians) * CPU_SPEED * dt
-                self.y += math.sin(radians) * CPU_SPEED * dt
+                self.x += math.cos(radians) * self.speed * dt
+                self.y += math.sin(radians) * self.speed * dt
                 self.clamp_to_arena()
             else:
+                self.attack_kind = "heavy" if random.random() < self.heavy_chance else "jab"
+                windup = CPU_HEAVY_WINDUP if self.attack_kind == "heavy" else CPU_JAB_WINDUP
+                # Getting hurt makes it fight faster and meaner, not slower.
+                aggression = 0.75 + 0.25 * (self.health / self.max_health)
                 self.state = "windup"
-                self.state_timer = CPU_WINDUP_TIME * (2.2 if observation_active else 1.0)
+                self.state_timer = windup * aggression * (2.2 if observation_active else 1.0)
         elif self.state == "windup":
             self.state_timer -= dt
             if self.state_timer <= 0:
                 self.state = "recover"
-                self.state_timer = CPU_RECOVER_TIME
-                return "swing"
+                self.state_timer = CPU_HEAVY_RECOVER if self.attack_kind == "heavy" else CPU_JAB_RECOVER
+                return self.attack_kind
         elif self.state == "recover":
             self.state_timer -= dt
             if self.state_timer <= 0:
@@ -373,12 +397,15 @@ class Rival(Fighter):
     def draw(self, surface):
         self.draw_body(surface, (255, 190, 190))
         if self.state == "windup":
+            heavy = self.attack_kind == "heavy"
             warn_x, warn_y = self.x, self.y - FIGHTER_SIZE - 26
+            size = 11 if heavy else 8
+            color = (200, 40, 40) if heavy else (255, 170, 40)
             pygame.draw.polygon(
-                surface, (255, 170, 40),
-                [(warn_x - 9, warn_y + 15), (warn_x + 9, warn_y + 15), (warn_x, warn_y - 6)],
+                surface, color,
+                [(warn_x - size, warn_y + size + 6), (warn_x + size, warn_y + size + 6), (warn_x, warn_y - 6)],
             )
-            draw_text(surface, "!", (warn_x, warn_y - 4), size=18, align="center", color=(40, 25, 0))
+            draw_text(surface, "!!" if heavy else "!", (warn_x, warn_y - 4), size=18, align="center", color=(30, 20, 0))
         if self.stun_timer > 0:
             draw_text(surface, "STUNNED", (self.x, self.y - FIGHTER_SIZE - 30),
                       size=16, align="center", color=CONQUEROR_COLOR)
@@ -395,22 +422,21 @@ class Game:
 
     def start_new_game(self):
         self.player = Player()
-        self.rival = Rival()
+        self.rival = Rival()          # a default rival just to stand there on the start screen
         self.effects = []
         self.bursts = []
         self.shake_timer = 0.0
         self.shake_magnitude = 0.0
         self.score = 0
+        self.started = False
         self.over = False
         self.result = None
-        self.rocks = [
-            (random.uniform(ARENA_MARGIN, WIDTH - ARENA_MARGIN),
-             random.uniform(ARENA_TOP, HEIGHT - ARENA_MARGIN),
-             random.uniform(14, 30))
-            for _ in range(6)
-        ]
         reset_score()
         submit_score(0)
+
+    def choose_difficulty(self, difficulty):
+        self.rival = Rival(difficulty)
+        self.started = True
 
     def trigger_shake(self, magnitude):
         self.shake_timer = SHAKE_DURATION
@@ -434,6 +460,9 @@ class Game:
         game_over(self.score)
 
     def update(self, dt, keys):
+        if not self.started:
+            return
+
         self.shake_timer = max(0.0, self.shake_timer - dt)
         for effect in self.effects:
             effect.update(dt)
@@ -458,13 +487,16 @@ class Game:
             self.trigger_shake(10)
 
         swing_event = self.rival.update(dt, self.player.x, self.player.y, self.player.observation_active > 0)
-        if swing_event == "swing":
+        if swing_event:
+            heavy = swing_event == "heavy"
+            reach = CPU_HEAVY_RANGE if heavy else CPU_JAB_RANGE
+            damage = round((CPU_HEAVY_DAMAGE if heavy else CPU_JAB_DAMAGE) * self.rival.damage_mult)
             dist = math.hypot(self.rival.x - self.player.x, self.rival.y - self.player.y)
-            if dist <= CPU_ATTACK_RANGE * 1.3:
-                self.player.health = max(0, self.player.health - CPU_DAMAGE)
+            if dist <= reach * 1.3:
+                self.player.health = max(0, self.player.health - damage)
                 self.player.hit_flash = HIT_FLASH_TIME
-                self.effects.append(Debris(self.player.x, self.player.y, 10, SPARK_COLOR))
-                self.trigger_shake(8)
+                self.effects.append(Debris(self.player.x, self.player.y, 14 if heavy else 8, SPARK_COLOR))
+                self.trigger_shake(11 if heavy else 6)
                 if self.player.health <= 0:
                     self.end_duel("lose")
                     return
@@ -493,14 +525,17 @@ class Game:
                     return
 
     def draw(self, surface):
-        surface.fill(SKY_COLOR)
-        pygame.draw.rect(surface, GROUND_COLOR, (0, ARENA_TOP - 40, WIDTH, HEIGHT - ARENA_TOP + 40))
-        for i in range(5):
-            px = WIDTH * (i + 0.5) / 5
-            pygame.draw.rect(surface, PILLAR_COLOR, (px - 14, ARENA_TOP - 100, 28, 100))
-        for x, y, size in self.rocks:
-            pygame.draw.circle(surface, ROCK_COLOR, (int(x), int(y)), int(size))
-            pygame.draw.circle(surface, HULL_OUTLINE, (int(x), int(y)), int(size), 2)
+        # A sheet of graph paper for the fight to happen on.
+        surface.fill(PAPER_COLOR)
+        for grid_x in range(0, WIDTH, GRID_SPACING):
+            pygame.draw.line(surface, GRID_COLOR, (grid_x, 0), (grid_x, HEIGHT), 1)
+        for grid_y in range(0, HEIGHT, GRID_SPACING):
+            pygame.draw.line(surface, GRID_COLOR, (0, grid_y), (WIDTH, grid_y), 1)
+        pygame.draw.rect(
+            surface, OUTLINE_COLOR,
+            (ARENA_MARGIN - 20, ARENA_TOP - 20, WIDTH - 2 * (ARENA_MARGIN - 20), HEIGHT - ARENA_TOP - ARENA_MARGIN + 40),
+            3,
+        )
 
         self.rival.draw(surface)
         self.player.draw(surface)
@@ -511,19 +546,26 @@ class Game:
 
         self.draw_hud(surface)
 
-        if self.over:
+        if not self.started:
+            draw_text(surface, "GOD VALLEY", (WIDTH / 2, HEIGHT / 2 - 150), size=54, align="center", color=HAKI_COLOR)
+            draw_text(surface, "MOVE: WASD OR ARROW KEYS", (WIDTH / 2, HEIGHT / 2 - 60), size=18, align="center")
+            draw_text(surface, "SWORD: SPACE     ARMAMENT HAKI: Q", (WIDTH / 2, HEIGHT / 2 - 30), size=18, align="center")
+            draw_text(surface, "CONQUEROR'S HAKI: E     OBSERVATION HAKI: R", (WIDTH / 2, HEIGHT / 2), size=18, align="center")
+            draw_text(surface, "PICK A DIFFICULTY — 1 EASY   2 MEDIUM   3 HARD",
+                      (WIDTH / 2, HEIGHT / 2 + 60), size=26, align="center")
+        elif self.over:
             if self.result == "win":
                 draw_text(surface, "VICTORY", (WIDTH / 2, HEIGHT / 2 - 40), size=64, align="center", color=HAKI_COLOR)
             else:
-                draw_text(surface, "DEFEATED", (WIDTH / 2, HEIGHT / 2 - 40), size=64, align="center", color=RIVAL_BODY_COLOR)
+                draw_text(surface, "DEFEATED", (WIDTH / 2, HEIGHT / 2 - 40), size=64, align="center", color=RIVAL_LINE_COLOR)
             draw_text(surface, f"SCORE {self.score}", (WIDTH / 2, HEIGHT / 2 + 30), size=34, align="center")
             draw_text(surface, "PRESS R TO PLAY AGAIN", (WIDTH / 2, HEIGHT / 2 + 80), size=24, align="center")
 
     def draw_hud(self, surface):
         draw_bar(surface, 28, 22, 260, 22, self.player.health / PLAYER_MAX_HEALTH, HAKI_COLOR)
         draw_text(surface, "FAFA", (28, 48), size=16)
-        draw_bar(surface, WIDTH - 28 - 260, 22, 260, 22, self.rival.health / CPU_MAX_HEALTH,
-                  RIVAL_BODY_COLOR, from_right=True)
+        draw_bar(surface, WIDTH - 28 - 260, 22, 260, 22, self.rival.health / self.rival.max_health,
+                  RIVAL_LINE_COLOR, from_right=True)
         draw_text(surface, "RIVAL", (WIDTH - 28, 48), size=16, align="right")
 
         draw_bar(surface, 28, 68, 180, 12, self.player.conqueror_meter / CONQUEROR_METER_MAX, CONQUEROR_COLOR)
@@ -553,6 +595,8 @@ async def main():
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_r and game.over:
                     game.start_new_game()
+                elif not game.started and event.key in DIFFICULTY_KEYS:
+                    game.choose_difficulty(DIFFICULTY_KEYS[event.key])
                 # ESC is not handled here on purpose — in Islands World it means
                 # "leave this island", and the world itself takes care of that.
 
@@ -561,7 +605,7 @@ async def main():
 
         # A little screen shake on big hits — draw to an offscreen surface, then
         # blit it onto the real screen with a small random offset.
-        screen.fill(SKY_COLOR)
+        screen.fill(PAPER_COLOR)
         screen.blit(render_surface, game.shake_offset())
         pygame.display.flip()
 
