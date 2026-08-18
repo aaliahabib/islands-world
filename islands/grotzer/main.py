@@ -60,6 +60,8 @@ MAX_HIT_POINTS = 100             # points for a perfect, dead-center hit
 MISS_PENALTY = 15                # points lost for letting a note go by
 MAX_MISSES = 20                  # game over once you've missed this many
 
+QUIT_CONFIRM_WINDOW = 3.0        # seconds the "press space again to end" prompt stays up
+
 CHORD_FREE_TIME = 60.0           # seconds before two notes are allowed to need hitting at once
 
 HOLD_NOTES_START_AT = 10.0       # seconds into the game before hold notes appear
@@ -178,6 +180,7 @@ class Game:
         self.misses = 0
         self.spawn_timer = 0.0
         self.time_alive = 0.0
+        self.quit_confirm_timer = 0.0
         self.over = False
         reset_score()
         submit_score(0)
@@ -194,6 +197,13 @@ class Game:
         if self.misses >= MAX_MISSES:
             self.over = True
             game_over(self.score)
+
+    def handle_quit_key(self):
+        if self.quit_confirm_timer > 0:
+            self.over = True
+            game_over(self.score)
+        else:
+            self.quit_confirm_timer = QUIT_CONFIRM_WINDOW
 
     def try_hit(self, lane_index):
         # Find the closest not-yet-hit note in this lane.
@@ -270,6 +280,12 @@ class Game:
             return
 
         self.time_alive += dt
+        self.quit_confirm_timer = max(0.0, self.quit_confirm_timer - dt)
+
+        if pygame.K_SPACE in pressed_keys:
+            self.handle_quit_key()
+            if self.over:
+                return
 
         for lane_index, lane in enumerate(LANES):
             if lane["key"] in pressed_keys:
@@ -349,6 +365,10 @@ class Game:
         draw_text(surface, str(self.score), (28, 62), size=48)
         draw_text(surface, f"MISSES {self.misses}/{MAX_MISSES}", (WIDTH - 28, 26),
                   size=24, align="right")
+
+        if self.quit_confirm_timer > 0:
+            draw_text(surface, "PRESS SPACE AGAIN TO END", (28, HEIGHT - 50),
+                      size=20, color=(255, 210, 80))
 
 
 async def main():
