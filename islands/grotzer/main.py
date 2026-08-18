@@ -3,9 +3,13 @@
 Four lane circles sit at the bottom. Notes fall down each lane — hit D, F, J or
 K right as a note reaches its circle. The closer to dead-center you hit it, the
 more points you get. After 10 seconds, some notes grow a tail — hold the key
-down until the tail finishes for a big bonus. Miss 20 notes and it's game over.
+down until the tail finishes for a big bonus. After 45 seconds, some notes show
+a number — hit it that many times (it bounces and falls again each time) to
+clear it. A little tune plays as you go, and each hit rings its own note.
+Chain hits without missing to build a combo. Miss 20 notes and it's game over.
 
     D / F / J / K   hit the matching lane (hold for tailed notes)
+    SPACE           end the run early (press again within 3s to confirm)
     R               restart after game over
 
 This is YOUR game now. The fastest way to make it yours is the CUSTOMIZE block
@@ -20,7 +24,9 @@ Two rules that keep your island working inside Islands World:
      your score on the world scoreboard.
 """
 
+import array
 import asyncio
+import math
 import random
 
 import pygame
@@ -42,10 +48,10 @@ LINE_COLOR = (255, 255, 255)
 FONT_NAME = None                 # None = pygame's built-in font
 
 LANES = [
-    {"key": pygame.K_d, "label": "D", "color": (255, 90, 90)},
-    {"key": pygame.K_f, "label": "F", "color": (255, 210, 80)},
-    {"key": pygame.K_j, "label": "J", "color": (100, 220, 140)},
-    {"key": pygame.K_k, "label": "K", "color": (110, 170, 255)},
+    {"key": pygame.K_d, "label": "D", "color": (255, 90, 90), "pitch": 293.66},   # D4
+    {"key": pygame.K_f, "label": "F", "color": (255, 210, 80), "pitch": 349.23},  # F4
+    {"key": pygame.K_j, "label": "J", "color": (100, 220, 140), "pitch": 392.00}, # G4
+    {"key": pygame.K_k, "label": "K", "color": (110, 170, 255), "pitch": 440.00}, # A4
 ]
 
 TARGET_Y = HEIGHT - 110          # height of the fixed circles
@@ -70,6 +76,25 @@ HOLD_MIN_DURATION = 0.5          # shortest hold, in seconds
 HOLD_MAX_DURATION = 5.0          # longest hold, in seconds
 HOLD_PRESS_SHARE = 0.5           # fraction of the normal hit points awarded on press
 HOLD_COMPLETE_BONUS = 1.2        # full-hold total, as a multiple of a normal hit
+
+BOUNCE_NOTES_START_AT = 45.0     # seconds into the game before bounce notes appear
+BOUNCE_NOTE_CHANCE = 0.2         # chance a note spawns as a bounce note, once unlocked
+BOUNCE_MIN_HITS = 2              # smallest starting number on a bounce note
+BOUNCE_MAX_HITS = 4              # largest starting number on a bounce note
+BOUNCE_HIT_SHARE = 0.8           # each bounce-note hit is worth this fraction of a normal hit
+BOUNCE_HEIGHT = 50               # how high (in pixels) it bounces
+BOUNCE_UP_SPEED = 700            # pixels per second going up — faster than the normal fall
+
+SAMPLE_RATE = 44100                 # audio quality — leave this one alone
+HIT_TONE_DURATION = 0.12            # seconds each hit tone rings for
+HIT_TONE_VOLUME = 0.35
+BACKGROUND_VOLUME = 0.15
+BACKGROUND_PATTERN = [              # (pitch, seconds) — the looping background tune
+    (261.63, 0.4),   # C4
+    (329.63, 0.4),   # E4
+    (392.00, 0.4),   # G4
+    (329.63, 0.4),   # E4
+]
 
 FPS = 60
 
@@ -101,6 +126,18 @@ def format_time(seconds):
     minutes = int(seconds) // 60
     secs = int(seconds) % 60
     return f"{minutes}:{secs:02d}"
+
+
+def make_tone(frequency, duration, volume):
+    """Build a short sine-wave beep as a pygame Sound — no audio files needed."""
+    n_samples = max(1, int(SAMPLE_RATE * duration))
+    amplitude = int(32767 * volume)
+    samples = array.array("h", [0]) * n_samples
+    for i in range(n_samples):
+        fade = 1.0 - (i / n_samples)   # fades to silence so it doesn't click at the end
+        wave = math.sin(2 * math.pi * frequency * i / SAMPLE_RATE)
+        samples[i] = int(amplitude * wave * fade)
+    return pygame.mixer.Sound(buffer=samples)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -144,6 +181,26 @@ class HoldNote(Note):
         super().draw(surface)
 
 
+class BounceNote(Note):
+    def __init__(self, lane_index, hits_remaining):
+        super().__init__(lane_index)
+        self.hits_remaining = hits_remaining
+        self.bouncing = False     # True only while it's on its way up after a hit
+
+    def update(self, dt):
+        if self.bouncing:
+            self.y -= BOUNCE_UP_SPEED * dt
+            if self.y <= TARGET_Y - BOUNCE_HEIGHT:
+                self.bouncing = False    # peaked — falls at the normal speed from here
+        else:
+            self.y += NOTE_SPEED * dt
+
+    def draw(self, surface):
+        super().draw(surface)
+        draw_text(surface, str(self.hits_remaining), (self.x, self.y - 11),
+                  size=22, align="center", color=BACKGROUND)
+
+
 class Popup:
     """A little floating score number, like "+87" or "MISS"."""
 
@@ -170,7 +227,9 @@ class Popup:
 
 
 class Game:
-    def __init__(self):
+    def __init__(self, lane_sounds, bg_sounds):
+        self.lane_sounds = lane_sounds
+        self.bg_sounds = bg_sounds
         self.start_new_game()
 
     def start_new_game(self):
@@ -178,9 +237,12 @@ class Game:
         self.popups = []
         self.score = 0
         self.misses = 0
+        self.combo = 0
         self.spawn_timer = 0.0
         self.time_alive = 0.0
         self.quit_confirm_timer = 0.0
+        self.bg_index = 0
+        self.bg_timer = 0.0
         self.over = False
         reset_score()
         submit_score(0)
@@ -192,6 +254,7 @@ class Game:
     def register_miss(self, lane_index):
         self.add_score(-MISS_PENALTY)
         self.misses += 1
+        self.combo = 0
         x = lane_x(lane_index)
         self.popups.append(Popup(x, TARGET_Y - TARGET_RADIUS - 10, "MISS", (255, 90, 90)))
         if self.misses >= MAX_MISSES:
@@ -205,9 +268,17 @@ class Game:
         else:
             self.quit_confirm_timer = QUIT_CONFIRM_WINDOW
 
+    def register_hit(self, lane_index, x):
+        self.combo += 1
+        self.lane_sounds[lane_index].play()
+        self.popups.append(Popup(x, TARGET_Y - TARGET_RADIUS - 34, f"{self.combo}x COMBO", (255, 215, 0)))
+
     def try_hit(self, lane_index):
         # Find the closest not-yet-hit note in this lane.
-        candidates = [n for n in self.notes if n.lane == lane_index and not getattr(n, "started", False)]
+        candidates = [
+            n for n in self.notes
+            if n.lane == lane_index and not getattr(n, "started", False) and not getattr(n, "bouncing", False)
+        ]
         if not candidates:
             return
         closest = min(candidates, key=Note.distance_to_target)
@@ -225,10 +296,22 @@ class Game:
             press_award = round(timing_points * HOLD_PRESS_SHARE)
             self.add_score(press_award)
             self.popups.append(Popup(closest.x, TARGET_Y - TARGET_RADIUS - 10, f"+{press_award}", color))
+            self.register_hit(lane_index, closest.x)
+        elif isinstance(closest, BounceNote):
+            hit_points = round(timing_points * BOUNCE_HIT_SHARE)
+            self.add_score(hit_points)
+            self.popups.append(Popup(closest.x, TARGET_Y - TARGET_RADIUS - 10, f"+{hit_points}", color))
+            closest.hits_remaining -= 1
+            if closest.hits_remaining <= 0:
+                self.notes.remove(closest)
+            else:
+                closest.bouncing = True
+            self.register_hit(lane_index, closest.x)
         else:
             self.notes.remove(closest)
             self.add_score(timing_points)
             self.popups.append(Popup(closest.x, TARGET_Y - TARGET_RADIUS - 10, f"+{timing_points}", color))
+            self.register_hit(lane_index, closest.x)
 
     def lane_blocked(self, lane_index, spawn_y):
         """True if a new note at spawn_y would land inside a hold note's tail."""
@@ -282,6 +365,12 @@ class Game:
         self.time_alive += dt
         self.quit_confirm_timer = max(0.0, self.quit_confirm_timer - dt)
 
+        self.bg_timer -= dt
+        if self.bg_timer <= 0:
+            self.bg_sounds[self.bg_index].play()
+            self.bg_timer = BACKGROUND_PATTERN[self.bg_index][1]
+            self.bg_index = (self.bg_index + 1) % len(self.bg_sounds)
+
         if pygame.K_SPACE in pressed_keys:
             self.handle_quit_key()
             if self.over:
@@ -312,6 +401,9 @@ class Game:
                     if self.time_alive >= HOLD_NOTES_START_AT and random.random() < HOLD_NOTE_CHANCE:
                         duration = random.uniform(HOLD_MIN_DURATION, HOLD_MAX_DURATION)
                         self.notes.append(HoldNote(lane_index, duration))
+                    elif self.time_alive >= BOUNCE_NOTES_START_AT and random.random() < BOUNCE_NOTE_CHANCE:
+                        hits = random.randint(BOUNCE_MIN_HITS, BOUNCE_MAX_HITS)
+                        self.notes.append(BounceNote(lane_index, hits))
                     else:
                         self.notes.append(Note(lane_index))
             self.spawn_timer = NOTE_SPAWN_INTERVAL
@@ -373,11 +465,15 @@ class Game:
 
 async def main():
     pygame.init()
+    pygame.mixer.init(frequency=SAMPLE_RATE, size=-16, channels=1, buffer=512)
     pygame.display.set_caption(TITLE)
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
     clock = pygame.time.Clock()
 
-    game = Game()
+    lane_sounds = [make_tone(lane["pitch"], HIT_TONE_DURATION, HIT_TONE_VOLUME) for lane in LANES]
+    bg_sounds = [make_tone(pitch, duration, BACKGROUND_VOLUME) for pitch, duration in BACKGROUND_PATTERN]
+
+    game = Game(lane_sounds, bg_sounds)
     running = True
 
     while running:
