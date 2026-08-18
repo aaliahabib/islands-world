@@ -31,7 +31,7 @@ from islands_sdk import game_over, reset as reset_score, submit_score
 #  break the game; the worst that happens is it gets silly.
 # ─────────────────────────────────────────────────────────────────────────────
 
-TITLE = "Asteroid Island"
+TITLE = "Mogadishu Island"
 
 WIDTH = 900                      # size of the game window
 HEIGHT = 700
@@ -66,12 +66,23 @@ ROCK_SPLIT_COUNT = 2                   # how many pieces a rock breaks into
 ENEMY_START_WAVE = 2              # the enemy ship starts showing up on this wave
 ENEMY_SPEED = 260                 # how fast it chases you (faster than your ship's SHIP_MAX_SPEED)
 ENEMY_TURN_SPEED = 150            # how quickly it turns to face you, degrees per second
-ENEMY_HITS_TO_DESTROY = 3         # how many bullets it takes to destroy it
+ENEMY_HITS_TO_DESTROY = 5         # how many bullets it takes to destroy it
+ENEMY_INVULN_TIME = 1.0           # seconds of blinking safety after taking a hit
 ENEMY_POINTS = 200                # points for destroying it
 ENEMY_SIZE = 22
 ENEMY_COLOR = (255, 40, 40)       # colour of the enemy ship
 
+ENEMY_ATTACK_MIN_INTERVAL = 18.0   # a special attack starts every 18-22 seconds
+ENEMY_ATTACK_MAX_INTERVAL = 22.0
+ENEMY_ATTACK_DURATION = 5.0        # how long the attack lasts
+ENEMY_SHIELD_COLOR = (60, 140, 255)   # blue shield shown while it's invincible
+ENEMY_BULLET_SPEED = 260
+ENEMY_BULLET_LIFETIME = 1.4
+ENEMY_BULLET_INTERVAL = 0.12       # seconds between each spray bullet
+ENEMY_BULLET_SPRAY_TURN = 25       # degrees each spray bullet turns from the last
+
 POWERUP_DURATION = 5.0            # how long a power-up's effect lasts, in seconds
+POWERUP_LIFETIME = 7.0            # how long a power-up sits on screen before vanishing
 POWERUP_MIN_INTERVAL = 6.0        # a new power-up appears every 6-12 seconds
 POWERUP_MAX_INTERVAL = 12.0
 POWERUP_RADIUS = 14
@@ -195,21 +206,22 @@ class Ship:
 
 
 class Bullet:
-    def __init__(self, x, y, angle):
+    def __init__(self, x, y, angle, speed=BULLET_SPEED, lifetime=BULLET_LIFETIME, color=None):
         radians = math.radians(angle)
         self.x = x
         self.y = y
-        self.vx = math.cos(radians) * BULLET_SPEED
-        self.vy = math.sin(radians) * BULLET_SPEED
-        self.life = BULLET_LIFETIME
+        self.vx = math.cos(radians) * speed
+        self.vy = math.sin(radians) * speed
+        self.life = lifetime
         self.radius = 2
+        self.color = color or LINE_COLOR
 
     def update(self, dt):
         self.x, self.y = wrap(self.x + self.vx * dt, self.y + self.vy * dt)
         self.life -= dt
 
     def draw(self, surface):
-        pygame.draw.rect(surface, LINE_COLOR, (self.x - 1.5, self.y - 1.5, 3, 3), 0)
+        pygame.draw.rect(surface, self.color, (self.x - 1.5, self.y - 1.5, 3, 3), 0)
 
 
 class Rock:
@@ -270,8 +282,45 @@ class EnemyShip:
         self.angle = 0.0
         self.radius = ENEMY_SIZE * 0.7
         self.hits_left = ENEMY_HITS_TO_DESTROY
+        self.invuln = 0.0
+        self.age = 0.0
+
+        self.attacking = False
+        self.attack_timer = random.uniform(ENEMY_ATTACK_MIN_INTERVAL, ENEMY_ATTACK_MAX_INTERVAL)
+        self.attack_time_left = 0.0
+        self.spray_angle = 0.0
+        self.bullet_timer = 0.0
+        self.new_bullets = []
 
     def update(self, dt, target):
+        self.age += dt
+        self.invuln = max(0.0, self.invuln - dt)
+        self.new_bullets = []
+
+        if self.attacking:
+            self.attack_time_left -= dt
+            if self.attack_time_left <= 0:
+                self.attacking = False
+                self.attack_timer = random.uniform(ENEMY_ATTACK_MIN_INTERVAL, ENEMY_ATTACK_MAX_INTERVAL)
+                return
+            self.bullet_timer -= dt
+            if self.bullet_timer <= 0:
+                self.bullet_timer = ENEMY_BULLET_INTERVAL
+                self.new_bullets.append(Bullet(
+                    self.x, self.y, self.spray_angle,
+                    speed=ENEMY_BULLET_SPEED, lifetime=ENEMY_BULLET_LIFETIME, color=ENEMY_COLOR,
+                ))
+                self.spray_angle += ENEMY_BULLET_SPRAY_TURN
+            return
+
+        self.attack_timer -= dt
+        if self.attack_timer <= 0:
+            self.attacking = True
+            self.attack_time_left = ENEMY_ATTACK_DURATION
+            self.spray_angle = 0.0
+            self.bullet_timer = 0.0
+            return
+
         # Turn to face the ship, then fly straight at it.
         dx, dy = target.x - self.x, target.y - self.y
         desired_angle = math.degrees(math.atan2(dy, dx))
@@ -297,7 +346,13 @@ class EnemyShip:
         ]
 
     def draw(self, surface):
+        # Blink while invulnerable, same as the player does after respawning.
+        if self.invuln > 0 and int(self.age * 12) % 2 == 0:
+            return
         draw_shape(surface, self.points(self.SHAPE), color=ENEMY_COLOR)
+        if self.attacking:
+            pygame.draw.circle(surface, ENEMY_SHIELD_COLOR, (int(self.x), int(self.y)),
+                                int(self.radius + 12), 2)
 
 
 class PowerUp:
@@ -319,6 +374,10 @@ class PowerUp:
         self.radius = POWERUP_RADIUS
         self.color = SPEED_BOOST_COLOR if kind == "speed" else RAPID_FIRE_COLOR
         self.icon = self.ARROW_ICON if kind == "speed" else self.BULLET_ICON
+        self.life = POWERUP_LIFETIME
+
+    def update(self, dt):
+        self.life -= dt
 
     def draw(self, surface):
         points = [(self.x + px * self.radius, self.y + py * self.radius) for px, py in self.SHAPE]
@@ -372,6 +431,7 @@ class Game:
     def start_new_game(self):
         self.ship = Ship()
         self.bullets = []
+        self.enemy_bullets = []
         self.rocks = []
         self.enemy = None
         self.debris = []
@@ -463,6 +523,11 @@ class Game:
 
         if self.enemy:
             self.enemy.update(dt, self.ship)
+            self.enemy_bullets.extend(self.enemy.new_bullets)
+
+        for bullet in self.enemy_bullets:
+            bullet.update(dt)
+        self.enemy_bullets = [b for b in self.enemy_bullets if b.life > 0]
 
         self.powerup_timer -= dt
         if self.powerup_timer <= 0:
@@ -474,6 +539,10 @@ class Game:
                     break
             kind = random.choice(["speed", "rapid"])
             self.powerups.append(PowerUp(x, y, kind))
+
+        for powerup in self.powerups:
+            powerup.update(dt)
+        self.powerups = [p for p in self.powerups if p.life > 0]
 
         for burst in self.debris:
             burst.update(dt)
@@ -513,8 +582,8 @@ class Game:
         if picked_up:
             self.powerups = [p for p in self.powerups if p not in picked_up]
 
-        # Bullets vs enemy.
-        if self.enemy:
+        # Bullets vs enemy — invincible while shielded/attacking or blinking after a hit.
+        if self.enemy and not self.enemy.attacking and self.enemy.invuln <= 0:
             hit_by = None
             for bullet in self.bullets:
                 if collides(self.enemy, bullet):
@@ -526,10 +595,20 @@ class Game:
                 if self.enemy.hits_left <= 0:
                     self.add_score(ENEMY_POINTS)
                     self.enemy = None
+                else:
+                    self.enemy.invuln = ENEMY_INVULN_TIME
 
         # Enemy ship vs ship.
         if self.ship.invuln <= 0 and self.enemy and collides(self.enemy, self.ship):
             self.lose_a_life()
+
+        # Enemy bullets vs ship.
+        if self.ship.invuln <= 0:
+            for bullet in self.enemy_bullets:
+                if collides(bullet, self.ship):
+                    self.enemy_bullets.remove(bullet)
+                    self.lose_a_life()
+                    break
 
         self.banner_timer = max(0.0, self.banner_timer - dt)
 
@@ -547,6 +626,8 @@ class Game:
         for powerup in self.powerups:
             powerup.draw(surface)
         for bullet in self.bullets:
+            bullet.draw(surface)
+        for bullet in self.enemy_bullets:
             bullet.draw(surface)
         for burst in self.debris:
             burst.draw(surface)
