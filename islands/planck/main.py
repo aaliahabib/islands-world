@@ -1,15 +1,19 @@
-"""ASTEROIDS — your island's game.
+"""ZOO BREAKOUT — your island's game.
 
-Fly the ship, shoot the rocks, don't get hit. Big rocks split into smaller ones.
+You're the security guard. Animals escape their pens one at a time and come
+for you — dodge or jump their attacks, then hit them with the right weapon
+(it switches automatically) until they're down. Get hit once and it's over.
 
-    LEFT / RIGHT  (or A / D)   turn
-    UP            (or W)       thrust
-    SPACE                      shoot
-    R                          restart after game over
+    LEFT / RIGHT  (or A / D)   move
+    UP / SPACE                 jump
+    R                          dodge
+    E                          attack
+    R (after game over)        restart
 
 This is YOUR game now. The fastest way to make it yours is the CUSTOMIZE block
-just below — change the colours, make the ship faster, give yourself 10 lives.
-Then run it and see what happened. After that, ask Claude for bigger changes.
+just below — change the colours, make the guard faster, give the animals more
+health. Then run it and see what happened. After that, ask Claude for bigger
+changes.
 
 Two rules that keep your island working inside Islands World:
   1. keep `async def main()` and the `await asyncio.sleep(0)` at the end of the
@@ -31,36 +35,32 @@ from islands_sdk import game_over, reset as reset_score, submit_score
 #  break the game; the worst that happens is it gets silly.
 # ─────────────────────────────────────────────────────────────────────────────
 
-TITLE = "Asteroid Island"
+TITLE = "Zoo Breakout"
 
 WIDTH = 900                      # size of the game window
 HEIGHT = 700
 
-BACKGROUND = (0, 0, 0)           # colours are (RED, GREEN, BLUE), 0–255
-LINE_COLOR = (255, 255, 255)     # everything is drawn as lines in this colour
+SKY_COLOR = (135, 206, 235)      # daytime sky
+GROUND_COLOR = (110, 90, 60)     # dirt floor of the empty enclosure
+CAGE_WALL_COLOR = (170, 165, 150)   # back wall of the empty cage, behind the guard
+CAGE_BAR_COLOR = (60, 60, 60)       # bars across the cage wall — pure background, no collision
+CAGE_WIDTH = 480                    # how wide the cage is — make it smaller or bigger
+CAGE_SIGN_COLOR = (200, 60, 40)     # the "ZOO" sign on the cage
+LINE_COLOR = (255, 255, 255)     # the guard and UI are drawn in this colour
 LINE_WIDTH = 2
 FONT_NAME = None                 # None = pygame's built-in font
 
-SHIP_SIZE = 22                   # how big the ship is
-SHIP_TURN_SPEED = 220            # degrees per second
-SHIP_THRUST = 340                # how hard the engine pushes
-SHIP_MAX_SPEED = 430             # top speed
-SHIP_DRAG = 0.45                 # how fast you coast to a stop (0 = never)
-SHIP_INVULN_TIME = 2.0           # seconds of blinking safety after respawning
+GROUND_Y = HEIGHT - 120          # the ground the guard stands on
 
-BULLET_SPEED = 560
-BULLET_LIFETIME = 0.85           # seconds before a bullet fizzles out
-BULLET_COOLDOWN = 0.20           # seconds between shots
-MAX_BULLETS = 5
-
-STARTING_LIVES = 3
-STARTING_ROCKS = 4               # rocks in wave 1; each wave adds one more
-
-# Rocks come in 3 sizes. size 3 = big, 2 = medium, 1 = small.
-ROCK_RADIUS = {3: 54, 2: 30, 1: 16}
-ROCK_SPEED = {3: 55, 2: 90, 1: 140}
-ROCK_POINTS = {3: 20, 2: 50, 1: 100}   # points for shooting one
-ROCK_SPLIT_COUNT = 2                   # how many pieces a rock breaks into
+GUARD_SIZE = 34                  # how big the guard is
+GUARD_SPEED = 260                # how fast he walks, pixels/second
+GUARD_JUMP_SPEED = 620           # how strong the jump is
+GUARD_GRAVITY = 1500             # how fast he falls back down
+GUARD_DODGE_SPEED = 620          # how fast the dodge burst is
+GUARD_DODGE_TIME = 0.22          # seconds the dodge burst lasts
+GUARD_DODGE_COOLDOWN = 0.6       # seconds before you can dodge again
+GUARD_HAT_COLOR = (30, 40, 110)  # colour of the guard's security hat
+GUARD_WALK_SPEED = 9.0           # how fast his legs swing while walking
 
 FPS = 60
 
@@ -69,17 +69,12 @@ FPS = 60
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def wrap(x, y):
-    """The screen has no edges — fly off one side, come back on the other."""
-    return x % WIDTH, y % HEIGHT
-
-
-def draw_shape(surface, points, color=None, width=None):
-    """Draw a closed outline through `points`."""
+def draw_shape(surface, points, color=None, width=None, closed=True):
+    """Draw an outline through `points`."""
     pygame.draw.lines(
         surface,
         color or LINE_COLOR,
-        True,
+        closed,
         points,
         width or LINE_WIDTH,
     )
@@ -104,168 +99,145 @@ def draw_text(surface, text, pos, size=24, color=None, align="left"):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class Ship:
-    # The ship outline, drawn nose-first. Change these to reshape your ship.
-    SHAPE = [(1.0, 0.0), (-0.7, 0.65), (-0.4, 0.0), (-0.7, -0.65)]
-    FLAME = [(-0.45, 0.28), (-1.15, 0.0), (-0.45, -0.28)]
+class Guard:
+    # Proportions of the stickman, as a fraction of GUARD_SIZE. self.y is
+    # where his feet touch the ground.
+    HEAD_RADIUS = 0.26
+    LEG_LENGTH = 0.9
+    TORSO_LENGTH = 0.7
 
     def __init__(self):
         self.reset()
 
     def reset(self):
         self.x = WIDTH / 2
-        self.y = HEIGHT / 2
-        self.vx = 0.0
+        self.y = GROUND_Y
         self.vy = 0.0
-        self.angle = -90.0          # pointing up
-        self.thrusting = False
-        self.invuln = SHIP_INVULN_TIME
-        self.radius = SHIP_SIZE * 0.7
+        self.on_ground = True
+        self.facing = 1
+        self.dodge_timer = 0.0
+        self.dodge_cooldown = 0.0
+        self.dodge_vx = 0.0
+        self.attack_timer = 0.0
+        self.r_was_down = False
+        self.walk_phase = 0.0
+        self.walking = False
+
+    @property
+    def dodging(self):
+        return self.dodge_timer > 0
 
     def update(self, dt, keys):
-        turning = 0
-        if keys[pygame.K_LEFT] or keys[pygame.K_a]:
-            turning -= 1
-        if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
-            turning += 1
-        self.angle += turning * SHIP_TURN_SPEED * dt
+        self.dodge_cooldown = max(0.0, self.dodge_cooldown - dt)
+        self.attack_timer = max(0.0, self.attack_timer - dt)
 
-        self.thrusting = keys[pygame.K_UP] or keys[pygame.K_w]
-        if self.thrusting:
-            radians = math.radians(self.angle)
-            self.vx += math.cos(radians) * SHIP_THRUST * dt
-            self.vy += math.sin(radians) * SHIP_THRUST * dt
+        r_down = keys[pygame.K_r]
+        if r_down and not self.r_was_down and self.dodge_cooldown <= 0:
+            self.dodge_timer = GUARD_DODGE_TIME
+            self.dodge_cooldown = GUARD_DODGE_COOLDOWN
+            self.dodge_vx = GUARD_DODGE_SPEED * self.facing
+        self.r_was_down = r_down
 
-        # Drag, then speed limit.
-        damping = max(0.0, 1.0 - SHIP_DRAG * dt)
-        self.vx *= damping
-        self.vy *= damping
-        speed = math.hypot(self.vx, self.vy)
-        if speed > SHIP_MAX_SPEED:
-            self.vx = self.vx / speed * SHIP_MAX_SPEED
-            self.vy = self.vy / speed * SHIP_MAX_SPEED
+        if self.dodging:
+            self.dodge_timer = max(0.0, self.dodge_timer - dt)
+            self.x += self.dodge_vx * dt
+            self.walking = False
+        else:
+            move = 0
+            if keys[pygame.K_LEFT] or keys[pygame.K_a]:
+                move -= 1
+            if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
+                move += 1
+            if move:
+                self.facing = move
+            self.x += move * GUARD_SPEED * dt
 
-        self.x, self.y = wrap(self.x + self.vx * dt, self.y + self.vy * dt)
-        self.invuln = max(0.0, self.invuln - dt)
+            self.walking = move != 0 and self.on_ground
+            if self.walking:
+                self.walk_phase += dt * GUARD_WALK_SPEED
 
-    def points(self, shape, scale=SHIP_SIZE):
-        radians = math.radians(self.angle)
-        cos_a, sin_a = math.cos(radians), math.sin(radians)
-        return [
-            (
-                self.x + (px * cos_a - py * sin_a) * scale,
-                self.y + (px * sin_a + py * cos_a) * scale,
-            )
-            for px, py in shape
-        ]
+        half = GUARD_SIZE * 0.4
+        self.x = max(half, min(WIDTH - half, self.x))
 
-    def draw(self, surface, time_alive):
-        # Blink while invulnerable so you can tell you're safe.
-        if self.invuln > 0 and int(time_alive * 12) % 2 == 0:
-            return
-        draw_shape(surface, self.points(self.SHAPE))
-        if self.thrusting and random.random() < 0.7:
-            draw_shape(surface, self.points(self.FLAME))
+        if self.on_ground and (keys[pygame.K_UP] or keys[pygame.K_SPACE] or keys[pygame.K_w]):
+            self.vy = -GUARD_JUMP_SPEED
+            self.on_ground = False
 
-    def nose(self):
-        radians = math.radians(self.angle)
-        return (
-            self.x + math.cos(radians) * SHIP_SIZE,
-            self.y + math.sin(radians) * SHIP_SIZE,
-        )
+        self.vy += GUARD_GRAVITY * dt
+        self.y += self.vy * dt
+        if self.y >= GROUND_Y:
+            self.y = GROUND_Y
+            self.vy = 0.0
+            self.on_ground = True
 
-
-class Bullet:
-    def __init__(self, x, y, angle):
-        radians = math.radians(angle)
-        self.x = x
-        self.y = y
-        self.vx = math.cos(radians) * BULLET_SPEED
-        self.vy = math.sin(radians) * BULLET_SPEED
-        self.life = BULLET_LIFETIME
-        self.radius = 2
-
-    def update(self, dt):
-        self.x, self.y = wrap(self.x + self.vx * dt, self.y + self.vy * dt)
-        self.life -= dt
+    def attack(self):
+        self.attack_timer = 0.18
 
     def draw(self, surface):
-        pygame.draw.rect(surface, LINE_COLOR, (self.x - 1.5, self.y - 1.5, 3, 3), 0)
+        color = (255, 255, 120) if self.dodging else LINE_COLOR
+        flip = self.facing
 
+        feet_y = self.y
+        hip_y = feet_y - GUARD_SIZE * self.LEG_LENGTH
+        shoulder_y = hip_y - GUARD_SIZE * self.TORSO_LENGTH
+        head_r = GUARD_SIZE * self.HEAD_RADIUS
+        head_cx, head_cy = self.x, shoulder_y - head_r
 
-class Rock:
-    def __init__(self, x, y, size):
-        self.x = x
-        self.y = y
-        self.size = size
-        self.radius = ROCK_RADIUS[size]
+        # Legs swing opposite each other while walking; standing still, they
+        # rest in a neutral V.
+        swing = math.sin(self.walk_phase) * GUARD_SIZE * 0.34 if self.walking else 0.0
 
-        angle = random.uniform(0, math.tau)
-        speed = ROCK_SPEED[size] * random.uniform(0.7, 1.3)
-        self.vx = math.cos(angle) * speed
-        self.vy = math.sin(angle) * speed
-        self.spin = random.uniform(-60, 60)
-        self.angle = random.uniform(0, 360)
+        # Legs, torso and arms — all lines through the same body points.
+        pygame.draw.line(surface, color, (self.x, hip_y), (self.x - GUARD_SIZE * 0.28 + swing, feet_y), 4)
+        pygame.draw.line(surface, color, (self.x, hip_y), (self.x + GUARD_SIZE * 0.28 - swing, feet_y), 4)
+        pygame.draw.line(surface, color, (self.x, hip_y), (self.x, shoulder_y), 4)
+        pygame.draw.line(surface, color, (self.x, shoulder_y),
+                          (self.x - GUARD_SIZE * 0.3 * flip, shoulder_y + GUARD_SIZE * 0.3), 4)
 
-        # A lumpy circle with a few deep notches — this is what makes rocks look
-        # like rocks instead of like blobs.
-        corners = random.randint(9, 12)
-        self.shape = []
-        for i in range(corners):
-            theta = math.tau * i / corners
-            jitter = random.uniform(0.78, 1.1)
-            if random.random() < 0.25:
-                jitter = random.uniform(0.42, 0.58)   # a chunk taken out
-            self.shape.append((math.cos(theta) * jitter, math.sin(theta) * jitter))
+        # Front arm swings out on attack, otherwise rests at his side.
+        arm_x = self.x + GUARD_SIZE * (0.75 if self.attack_timer > 0 else 0.3) * flip
+        arm_y = shoulder_y + (GUARD_SIZE * 0.05 if self.attack_timer > 0 else GUARD_SIZE * 0.3)
+        pygame.draw.line(surface, color, (self.x, shoulder_y), (arm_x, arm_y), 4)
 
-    def update(self, dt):
-        self.x, self.y = wrap(self.x + self.vx * dt, self.y + self.vy * dt)
-        self.angle += self.spin * dt
+        pygame.draw.circle(surface, color, (int(head_cx), int(head_cy)), int(head_r), 3)
 
-    def draw(self, surface):
-        radians = math.radians(self.angle)
-        cos_a, sin_a = math.cos(radians), math.sin(radians)
-        points = [
-            (
-                self.x + (px * cos_a - py * sin_a) * self.radius,
-                self.y + (px * sin_a + py * cos_a) * self.radius,
-            )
-            for px, py in self.shape
-        ]
-        draw_shape(surface, points)
+        # The security hat: a brim across the forehead and a flat top.
+        brim_y = head_cy - head_r * 0.15
+        pygame.draw.line(surface, GUARD_HAT_COLOR,
+                          (head_cx - head_r * 1.3, brim_y), (head_cx + head_r * 1.3, brim_y), 5)
+        pygame.draw.rect(surface, GUARD_HAT_COLOR,
+                          (head_cx - head_r * 0.85, head_cy - head_r * 1.35, head_r * 1.7, head_r * 0.8))
 
-    def split(self):
-        """Break into smaller rocks. Smallest rocks just vanish."""
-        if self.size <= 1:
-            return []
-        return [Rock(self.x, self.y, self.size - 1) for _ in range(ROCK_SPLIT_COUNT)]
-
-
-class Debris:
-    """A little burst of lines when something is destroyed."""
-
-    def __init__(self, x, y, count=8):
-        self.pieces = []
-        for _ in range(count):
-            angle = random.uniform(0, math.tau)
-            speed = random.uniform(40, 170)
-            self.pieces.append(
-                [x, y, math.cos(angle) * speed, math.sin(angle) * speed]
-            )
-        self.life = 0.6
-
-    def update(self, dt):
-        for piece in self.pieces:
-            piece[0] += piece[2] * dt
-            piece[1] += piece[3] * dt
-        self.life -= dt
-
-    def draw(self, surface):
-        for x, y, vx, vy in self.pieces:
-            scale = 0.03
+        if self.attack_timer > 0:
+            tip_x = self.x + self.facing * GUARD_SIZE * 1.4
             pygame.draw.line(
-                surface, LINE_COLOR, (x, y), (x - vx * scale, y - vy * scale), 1
+                surface, (255, 210, 90),
+                (arm_x, arm_y), (tip_x, arm_y), 4,
             )
+
+
+def draw_cage_background(surface):
+    """The empty enclosure behind the guard — pure scenery, nothing to hit."""
+    wall_top = GROUND_Y - 260
+    wall_left = (WIDTH - CAGE_WIDTH) / 2
+    wall_right = wall_left + CAGE_WIDTH
+
+    pygame.draw.rect(surface, CAGE_WALL_COLOR, (wall_left, wall_top, CAGE_WIDTH, GROUND_Y - wall_top))
+    for x in range(int(wall_left) + 20, int(wall_right), 40):
+        pygame.draw.line(surface, CAGE_BAR_COLOR, (x, wall_top), (x, GROUND_Y), 4)
+
+    # A frame around the bars — top rail and thicker corner posts — so it
+    # reads as a built structure instead of a flat rectangle.
+    pygame.draw.line(surface, CAGE_BAR_COLOR, (wall_left, wall_top), (wall_right, wall_top), 10)
+    pygame.draw.line(surface, CAGE_BAR_COLOR, (wall_left, wall_top), (wall_left, GROUND_Y), 10)
+    pygame.draw.line(surface, CAGE_BAR_COLOR, (wall_right, wall_top), (wall_right, GROUND_Y), 10)
+
+    # The sign sits straddling the top rail, like it's mounted on the cage.
+    sign_width, sign_height = 160, 48
+    sign_rect = (WIDTH / 2 - sign_width / 2, wall_top - sign_height / 2, sign_width, sign_height)
+    pygame.draw.rect(surface, CAGE_SIGN_COLOR, sign_rect)
+    pygame.draw.rect(surface, CAGE_BAR_COLOR, sign_rect, 3)
+    draw_text(surface, "ZOO", (WIDTH / 2, sign_rect[1] + 10), size=28, color=LINE_COLOR, align="center")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -273,147 +245,39 @@ class Debris:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def collides(a, b):
-    return math.hypot(a.x - b.x, a.y - b.y) < a.radius + b.radius
-
-
 class Game:
     def __init__(self):
         self.start_new_game()
 
     def start_new_game(self):
-        self.ship = Ship()
-        self.bullets = []
-        self.rocks = []
-        self.debris = []
+        self.guard = Guard()
         self.score = 0
-        self.lives = STARTING_LIVES
-        self.wave = 0
-        self.time_alive = 0.0
-        self.fire_timer = 0.0
         self.over = False
         reset_score()
         submit_score(0)
-        self.next_wave()
-
-    def next_wave(self):
-        self.wave += 1
-        count = STARTING_ROCKS + self.wave - 1
-        for _ in range(count):
-            # Spawn away from the middle so rocks don't appear on top of the ship.
-            while True:
-                x = random.uniform(0, WIDTH)
-                y = random.uniform(0, HEIGHT)
-                if math.hypot(x - WIDTH / 2, y - HEIGHT / 2) > 180:
-                    break
-            self.rocks.append(Rock(x, y, 3))
-
-    def shoot(self):
-        if self.fire_timer > 0 or len(self.bullets) >= MAX_BULLETS:
-            return
-        nose_x, nose_y = self.ship.nose()
-        self.bullets.append(Bullet(nose_x, nose_y, self.ship.angle))
-        self.fire_timer = BULLET_COOLDOWN
-
-    def add_score(self, points):
-        self.score += points
-        submit_score(self.score)
-
-    def lose_a_life(self):
-        self.debris.append(Debris(self.ship.x, self.ship.y, 12))
-        self.lives -= 1
-        if self.lives <= 0:
-            self.over = True
-            game_over(self.score)
-        else:
-            self.ship.reset()
 
     def update(self, dt, keys):
-        self.time_alive += dt
         if self.over:
-            for burst in self.debris:
-                burst.update(dt)
-            self.debris = [d for d in self.debris if d.life > 0]
             return
-
-        self.fire_timer = max(0.0, self.fire_timer - dt)
-        self.ship.update(dt, keys)
-        if keys[pygame.K_SPACE]:
-            self.shoot()
-
-        for bullet in self.bullets:
-            bullet.update(dt)
-        self.bullets = [b for b in self.bullets if b.life > 0]
-
-        for rock in self.rocks:
-            rock.update(dt)
-
-        for burst in self.debris:
-            burst.update(dt)
-        self.debris = [d for d in self.debris if d.life > 0]
-
-        # Bullets vs rocks.
-        surviving_rocks = []
-        for rock in self.rocks:
-            hit_by = None
-            for bullet in self.bullets:
-                if collides(rock, bullet):
-                    hit_by = bullet
-                    break
-            if hit_by is None:
-                surviving_rocks.append(rock)
-                continue
-            self.bullets.remove(hit_by)
-            self.add_score(ROCK_POINTS[rock.size])
-            self.debris.append(Debris(rock.x, rock.y))
-            surviving_rocks.extend(rock.split())
-        self.rocks = surviving_rocks
-
-        # Rocks vs ship.
-        if self.ship.invuln <= 0:
-            for rock in self.rocks:
-                if collides(rock, self.ship):
-                    self.lose_a_life()
-                    break
-
-        if not self.rocks:
-            self.next_wave()
+        self.guard.update(dt, keys)
+        if keys[pygame.K_e]:
+            self.guard.attack()
 
     def draw(self, surface):
-        surface.fill(BACKGROUND)
+        surface.fill(SKY_COLOR)
+        draw_cage_background(surface)
+        pygame.draw.rect(surface, GROUND_COLOR, (0, GROUND_Y, WIDTH, HEIGHT - GROUND_Y))
 
-        for rock in self.rocks:
-            rock.draw(surface)
-        for bullet in self.bullets:
-            bullet.draw(surface)
-        for burst in self.debris:
-            burst.draw(surface)
-        if not self.over:
-            self.ship.draw(surface, self.time_alive)
-
+        self.guard.draw(surface)
         self.draw_hud(surface)
 
         if self.over:
-            draw_text(surface, "GAME OVER", (WIDTH / 2, HEIGHT / 2 - 70), size=64, align="center")
-            draw_text(surface, f"SCORE {self.score}", (WIDTH / 2, HEIGHT / 2 + 10),
-                      size=34, align="center")
-            draw_text(surface, "PRESS R TO PLAY AGAIN", (WIDTH / 2, HEIGHT / 2 + 60),
+            draw_text(surface, "GAME OVER", (WIDTH / 2, HEIGHT / 2 - 40), size=64, align="center")
+            draw_text(surface, "PRESS R TO PLAY AGAIN", (WIDTH / 2, HEIGHT / 2 + 30),
                       size=24, align="center")
 
     def draw_hud(self, surface):
         draw_text(surface, str(self.score), (28, 22), size=48)
-
-        # Lives, drawn as little ships.
-        for i in range(self.lives):
-            x = 34 + i * 30
-            y = 90
-            points = [
-                (x + (px * 0.0 - py * -1.0) * 11, y + (px * -1.0 + py * 0.0) * 11)
-                for px, py in Ship.SHAPE
-            ]
-            draw_shape(surface, points, width=2)
-
-        draw_text(surface, f"WAVE {self.wave}", (WIDTH - 28, 26), size=24, align="right")
 
 
 async def main():
