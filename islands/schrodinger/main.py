@@ -72,6 +72,7 @@ LEAF_COLOR = (180, 255, 60)       # neon leaf-green glow
 LEAF_ALTITUDE = 120               # how high above the ground the leaf floats
 LEAF_MIN_GAP = 15                 # seconds, shortest time between leaves
 LEAF_MAX_GAP = 20                 # seconds, longest time between leaves
+LEAF_OBSTACLE_GAP = 180           # how far a leaf must stay from any obstacle
 
 FLIGHT_DURATION = 4.0             # seconds of flight after catching a leaf
 FLIGHT_ALTITUDE = 250             # how high the goat soars while flying
@@ -108,6 +109,7 @@ class Player:
         self.ducking = False
         self.flying = False
         self.flight_timer = 0.0
+        self.invulnerable = False  # stays true through the fall after flying ends
 
     def jump(self):
         if self.on_ground:
@@ -123,6 +125,7 @@ class Player:
 
     def start_flying(self):
         self.flying = True
+        self.invulnerable = True
         self.flight_timer = FLIGHT_DURATION
         self.vy = 0.0
         self.on_ground = False
@@ -141,6 +144,7 @@ class Player:
             self.y = GROUND_Y
             self.vy = 0.0
             self.on_ground = True
+            self.invulnerable = False
 
     def rect(self):
         scale = PLAYER_SIZE / 34
@@ -275,6 +279,10 @@ class Game:
         self.leaves.append(Leaf())
         self.leaf_timer = random.uniform(LEAF_MIN_GAP, LEAF_MAX_GAP)
 
+    def clear_to_spawn_leaf(self):
+        spawn_x = WIDTH + LEAF_WIDTH
+        return all(abs(o.x - spawn_x) >= LEAF_OBSTACLE_GAP for o in self.obstacles)
+
     def update(self, dt):
         if self.over:
             return
@@ -287,7 +295,10 @@ class Game:
 
         self.leaf_timer -= dt
         if self.leaf_timer <= 0:
-            self.spawn_leaf()
+            if self.clear_to_spawn_leaf():
+                self.spawn_leaf()
+            else:
+                self.leaf_timer = 0.5
 
         player_rect = self.player.rect()
         for obstacle in self.obstacles:
@@ -298,7 +309,7 @@ class Game:
                 self.score += POINTS_PER_OBSTACLE
                 submit_score(self.score)
 
-            if not self.player.flying and player_rect.colliderect(obstacle.rect()):
+            if not self.player.invulnerable and player_rect.colliderect(obstacle.rect()):
                 self.over = True
                 game_over(self.score)
 
