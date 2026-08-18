@@ -41,6 +41,7 @@ LINE_COLOR = (255, 255, 255)     # everything is drawn as lines in this colour
 LINE_WIDTH = 2
 FONT_NAME = None                 # None = pygame's built-in font
 
+SHIP_COLOR = (255, 230, 0)       # colour of your ship
 SHIP_SIZE = 22                   # how big the ship is
 SHIP_TURN_SPEED = 220            # degrees per second
 SHIP_THRUST = 340                # how hard the engine pushes
@@ -53,7 +54,7 @@ BULLET_LIFETIME = 0.85           # seconds before a bullet fizzles out
 BULLET_COOLDOWN = 0.20           # seconds between shots
 MAX_BULLETS = 5
 
-STARTING_LIVES = 3
+STARTING_LIVES = 4
 STARTING_ROCKS = 4               # rocks in wave 1; each wave adds one more
 
 # Rocks come in 3 sizes. size 3 = big, 2 = medium, 1 = small.
@@ -69,6 +70,15 @@ ENEMY_HITS_TO_DESTROY = 3         # how many bullets it takes to destroy it
 ENEMY_POINTS = 200                # points for destroying it
 ENEMY_SIZE = 22
 ENEMY_COLOR = (255, 40, 40)       # colour of the enemy ship
+
+POWERUP_DURATION = 5.0            # how long a power-up's effect lasts, in seconds
+POWERUP_MIN_INTERVAL = 6.0        # a new power-up appears every 6-12 seconds
+POWERUP_MAX_INTERVAL = 12.0
+POWERUP_RADIUS = 14
+SPEED_BOOST_COLOR = (60, 200, 255)     # cyan
+SPEED_BOOST_MULTIPLIER = 1.6           # how much faster your ship gets
+RAPID_FIRE_COLOR = (255, 220, 40)      # yellow
+RAPID_FIRE_COOLDOWN_MULTIPLIER = 0.35  # shot cooldown is multiplied by this (smaller = faster firing)
 
 FPS = 60
 
@@ -130,7 +140,7 @@ class Ship:
         self.invuln = SHIP_INVULN_TIME
         self.radius = SHIP_SIZE * 0.7
 
-    def update(self, dt, keys):
+    def update(self, dt, keys, speed_multiplier=1.0):
         turning = 0
         if keys[pygame.K_LEFT] or keys[pygame.K_a]:
             turning -= 1
@@ -141,17 +151,18 @@ class Ship:
         self.thrusting = keys[pygame.K_UP] or keys[pygame.K_w]
         if self.thrusting:
             radians = math.radians(self.angle)
-            self.vx += math.cos(radians) * SHIP_THRUST * dt
-            self.vy += math.sin(radians) * SHIP_THRUST * dt
+            self.vx += math.cos(radians) * SHIP_THRUST * speed_multiplier * dt
+            self.vy += math.sin(radians) * SHIP_THRUST * speed_multiplier * dt
 
         # Drag, then speed limit.
         damping = max(0.0, 1.0 - SHIP_DRAG * dt)
         self.vx *= damping
         self.vy *= damping
         speed = math.hypot(self.vx, self.vy)
-        if speed > SHIP_MAX_SPEED:
-            self.vx = self.vx / speed * SHIP_MAX_SPEED
-            self.vy = self.vy / speed * SHIP_MAX_SPEED
+        max_speed = SHIP_MAX_SPEED * speed_multiplier
+        if speed > max_speed:
+            self.vx = self.vx / speed * max_speed
+            self.vy = self.vy / speed * max_speed
 
         self.x, self.y = wrap(self.x + self.vx * dt, self.y + self.vy * dt)
         self.invuln = max(0.0, self.invuln - dt)
@@ -171,9 +182,9 @@ class Ship:
         # Blink while invulnerable so you can tell you're safe.
         if self.invuln > 0 and int(time_alive * 12) % 2 == 0:
             return
-        draw_shape(surface, self.points(self.SHAPE))
+        draw_shape(surface, self.points(self.SHAPE), color=SHIP_COLOR)
         if self.thrusting and random.random() < 0.7:
-            draw_shape(surface, self.points(self.FLAME))
+            draw_shape(surface, self.points(self.FLAME), color=SHIP_COLOR)
 
     def nose(self):
         radians = math.radians(self.angle)
@@ -289,6 +300,35 @@ class EnemyShip:
         draw_shape(surface, self.points(self.SHAPE), color=ENEMY_COLOR)
 
 
+class PowerUp:
+    # Drawn as a little filled diamond in the colour of whichever effect it
+    # grants, with an icon on top: an arrow for speed, a bullet for rapid fire.
+    SHAPE = [(1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0)]
+    ARROW_ICON = [
+        (-0.45, -0.3), (0.1, -0.3), (0.1, -0.55),
+        (0.6, 0.0), (0.1, 0.55), (0.1, 0.3), (-0.45, 0.3),
+    ]
+    BULLET_ICON = [
+        (0.0, -0.55), (0.4, -0.15), (0.4, 0.55), (-0.4, 0.55), (-0.4, -0.15),
+    ]
+
+    def __init__(self, x, y, kind):
+        self.x = x
+        self.y = y
+        self.kind = kind    # "speed" or "rapid"
+        self.radius = POWERUP_RADIUS
+        self.color = SPEED_BOOST_COLOR if kind == "speed" else RAPID_FIRE_COLOR
+        self.icon = self.ARROW_ICON if kind == "speed" else self.BULLET_ICON
+
+    def draw(self, surface):
+        points = [(self.x + px * self.radius, self.y + py * self.radius) for px, py in self.SHAPE]
+        pygame.draw.polygon(surface, self.color, points)
+        icon_points = [
+            (self.x + px * self.radius, self.y + py * self.radius) for px, py in self.icon
+        ]
+        pygame.draw.polygon(surface, BACKGROUND, icon_points)
+
+
 class Debris:
     """A little burst of lines when something is destroyed."""
 
@@ -335,6 +375,10 @@ class Game:
         self.rocks = []
         self.enemy = None
         self.debris = []
+        self.powerups = []
+        self.powerup_timer = random.uniform(POWERUP_MIN_INTERVAL, POWERUP_MAX_INTERVAL)
+        self.speed_timer = 0.0
+        self.rapid_timer = 0.0
         self.score = 0
         self.lives = STARTING_LIVES
         self.wave = 0
@@ -363,7 +407,7 @@ class Game:
                         break
                 self.rocks.append(Rock(x, y, 3))
 
-        if self.wave >= ENEMY_START_WAVE:
+        if self.wave == ENEMY_START_WAVE:
             while True:
                 x = random.uniform(0, WIDTH)
                 y = random.uniform(0, HEIGHT)
@@ -376,7 +420,10 @@ class Game:
             return
         nose_x, nose_y = self.ship.nose()
         self.bullets.append(Bullet(nose_x, nose_y, self.ship.angle))
-        self.fire_timer = BULLET_COOLDOWN
+        cooldown = BULLET_COOLDOWN
+        if self.rapid_timer > 0:
+            cooldown *= RAPID_FIRE_COOLDOWN_MULTIPLIER
+        self.fire_timer = cooldown
 
     def add_score(self, points):
         self.score += points
@@ -400,7 +447,10 @@ class Game:
             return
 
         self.fire_timer = max(0.0, self.fire_timer - dt)
-        self.ship.update(dt, keys)
+        self.speed_timer = max(0.0, self.speed_timer - dt)
+        self.rapid_timer = max(0.0, self.rapid_timer - dt)
+        speed_multiplier = SPEED_BOOST_MULTIPLIER if self.speed_timer > 0 else 1.0
+        self.ship.update(dt, keys, speed_multiplier)
         if keys[pygame.K_SPACE]:
             self.shoot()
 
@@ -413,6 +463,17 @@ class Game:
 
         if self.enemy:
             self.enemy.update(dt, self.ship)
+
+        self.powerup_timer -= dt
+        if self.powerup_timer <= 0:
+            self.powerup_timer = random.uniform(POWERUP_MIN_INTERVAL, POWERUP_MAX_INTERVAL)
+            while True:
+                x = random.uniform(0, WIDTH)
+                y = random.uniform(0, HEIGHT)
+                if math.hypot(x - WIDTH / 2, y - HEIGHT / 2) > 180:
+                    break
+            kind = random.choice(["speed", "rapid"])
+            self.powerups.append(PowerUp(x, y, kind))
 
         for burst in self.debris:
             burst.update(dt)
@@ -441,6 +502,16 @@ class Game:
                 if collides(rock, self.ship):
                     self.lose_a_life()
                     break
+
+        # Power-ups vs ship — only the ship picks these up.
+        picked_up = [p for p in self.powerups if collides(p, self.ship)]
+        for powerup in picked_up:
+            if powerup.kind == "speed":
+                self.speed_timer = POWERUP_DURATION
+            else:
+                self.rapid_timer = POWERUP_DURATION
+        if picked_up:
+            self.powerups = [p for p in self.powerups if p not in picked_up]
 
         # Bullets vs enemy.
         if self.enemy:
@@ -473,6 +544,8 @@ class Game:
             rock.draw(surface)
         if self.enemy:
             self.enemy.draw(surface)
+        for powerup in self.powerups:
+            powerup.draw(surface)
         for bullet in self.bullets:
             bullet.draw(surface)
         for burst in self.debris:
@@ -517,6 +590,16 @@ class Game:
                     for px, py in Ship.SHAPE
                 ]
                 draw_shape(surface, points, color=ENEMY_COLOR, width=2)
+
+        # Active power-up effects, shown below the score.
+        effect_y = 120
+        if self.speed_timer > 0:
+            draw_text(surface, f"SPEED {self.speed_timer:.1f}", (28, effect_y),
+                      size=20, color=SPEED_BOOST_COLOR)
+            effect_y += 26
+        if self.rapid_timer > 0:
+            draw_text(surface, f"RAPID FIRE {self.rapid_timer:.1f}", (28, effect_y),
+                      size=20, color=RAPID_FIRE_COLOR)
 
 
 async def main():
