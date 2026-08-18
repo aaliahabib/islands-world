@@ -59,6 +59,8 @@ GUARD_GRAVITY = 1500             # how fast he falls back down
 GUARD_DODGE_SPEED = 620          # how fast the dodge burst is
 GUARD_DODGE_TIME = 0.22          # seconds the dodge burst lasts
 GUARD_DODGE_COOLDOWN = 0.6       # seconds before you can dodge again
+GUARD_HAT_COLOR = (30, 40, 110)  # colour of the guard's security hat
+GUARD_WALK_SPEED = 9.0           # how fast his legs swing while walking
 
 FPS = 60
 
@@ -98,11 +100,11 @@ def draw_text(surface, text, pos, size=24, color=None, align="left"):
 
 
 class Guard:
-    # The guard outline, drawn facing right. Change these to reshape him.
-    SHAPE = [
-        (-0.35, 1.0), (-0.35, 0.15), (-0.55, -0.15), (-0.35, -0.45),
-        (0.0, -0.6), (0.35, -0.45), (0.55, -0.15), (0.35, 0.15), (0.35, 1.0),
-    ]
+    # Proportions of the stickman, as a fraction of GUARD_SIZE. self.y is
+    # where his feet touch the ground.
+    HEAD_RADIUS = 0.26
+    LEG_LENGTH = 0.9
+    TORSO_LENGTH = 0.7
 
     def __init__(self):
         self.reset()
@@ -118,6 +120,8 @@ class Guard:
         self.dodge_vx = 0.0
         self.attack_timer = 0.0
         self.r_was_down = False
+        self.walk_phase = 0.0
+        self.walking = False
 
     @property
     def dodging(self):
@@ -137,6 +141,7 @@ class Guard:
         if self.dodging:
             self.dodge_timer = max(0.0, self.dodge_timer - dt)
             self.x += self.dodge_vx * dt
+            self.walking = False
         else:
             move = 0
             if keys[pygame.K_LEFT] or keys[pygame.K_a]:
@@ -146,6 +151,10 @@ class Guard:
             if move:
                 self.facing = move
             self.x += move * GUARD_SPEED * dt
+
+            self.walking = move != 0 and self.on_ground
+            if self.walking:
+                self.walk_phase += dt * GUARD_WALK_SPEED
 
         half = GUARD_SIZE * 0.4
         self.x = max(half, min(WIDTH - half, self.x))
@@ -164,21 +173,46 @@ class Guard:
     def attack(self):
         self.attack_timer = 0.18
 
-    def points(self):
-        flip = -1 if self.facing < 0 else 1
-        return [
-            (self.x + px * flip * GUARD_SIZE, self.y + py * GUARD_SIZE)
-            for px, py in self.SHAPE
-        ]
-
     def draw(self, surface):
-        color = (255, 255, 120) if self.dodging else None
-        draw_shape(surface, self.points(), color=color)
+        color = (255, 255, 120) if self.dodging else LINE_COLOR
+        flip = self.facing
+
+        feet_y = self.y
+        hip_y = feet_y - GUARD_SIZE * self.LEG_LENGTH
+        shoulder_y = hip_y - GUARD_SIZE * self.TORSO_LENGTH
+        head_r = GUARD_SIZE * self.HEAD_RADIUS
+        head_cx, head_cy = self.x, shoulder_y - head_r
+
+        # Legs swing opposite each other while walking; standing still, they
+        # rest in a neutral V.
+        swing = math.sin(self.walk_phase) * GUARD_SIZE * 0.34 if self.walking else 0.0
+
+        # Legs, torso and arms — all lines through the same body points.
+        pygame.draw.line(surface, color, (self.x, hip_y), (self.x - GUARD_SIZE * 0.28 + swing, feet_y), 4)
+        pygame.draw.line(surface, color, (self.x, hip_y), (self.x + GUARD_SIZE * 0.28 - swing, feet_y), 4)
+        pygame.draw.line(surface, color, (self.x, hip_y), (self.x, shoulder_y), 4)
+        pygame.draw.line(surface, color, (self.x, shoulder_y),
+                          (self.x - GUARD_SIZE * 0.3 * flip, shoulder_y + GUARD_SIZE * 0.3), 4)
+
+        # Front arm swings out on attack, otherwise rests at his side.
+        arm_x = self.x + GUARD_SIZE * (0.75 if self.attack_timer > 0 else 0.3) * flip
+        arm_y = shoulder_y + (GUARD_SIZE * 0.05 if self.attack_timer > 0 else GUARD_SIZE * 0.3)
+        pygame.draw.line(surface, color, (self.x, shoulder_y), (arm_x, arm_y), 4)
+
+        pygame.draw.circle(surface, color, (int(head_cx), int(head_cy)), int(head_r), 3)
+
+        # The security hat: a brim across the forehead and a flat top.
+        brim_y = head_cy - head_r * 0.15
+        pygame.draw.line(surface, GUARD_HAT_COLOR,
+                          (head_cx - head_r * 1.3, brim_y), (head_cx + head_r * 1.3, brim_y), 5)
+        pygame.draw.rect(surface, GUARD_HAT_COLOR,
+                          (head_cx - head_r * 0.85, head_cy - head_r * 1.35, head_r * 1.7, head_r * 0.8))
+
         if self.attack_timer > 0:
             tip_x = self.x + self.facing * GUARD_SIZE * 1.4
             pygame.draw.line(
                 surface, (255, 210, 90),
-                (self.x, self.y - GUARD_SIZE * 0.2), (tip_x, self.y - GUARD_SIZE * 0.2), 4,
+                (arm_x, arm_y), (tip_x, arm_y), 4,
             )
 
 
@@ -186,14 +220,24 @@ def draw_cage_background(surface):
     """The empty enclosure behind the guard — pure scenery, nothing to hit."""
     wall_top = GROUND_Y - 260
     wall_left = (WIDTH - CAGE_WIDTH) / 2
+    wall_right = wall_left + CAGE_WIDTH
+
     pygame.draw.rect(surface, CAGE_WALL_COLOR, (wall_left, wall_top, CAGE_WIDTH, GROUND_Y - wall_top))
-    for x in range(int(wall_left) + 20, int(wall_left + CAGE_WIDTH), 40):
+    for x in range(int(wall_left) + 20, int(wall_right), 40):
         pygame.draw.line(surface, CAGE_BAR_COLOR, (x, wall_top), (x, GROUND_Y), 4)
 
-    sign_width, sign_height = 150, 44
-    sign_rect = (WIDTH / 2 - sign_width / 2, wall_top - sign_height - 10, sign_width, sign_height)
+    # A frame around the bars — top rail and thicker corner posts — so it
+    # reads as a built structure instead of a flat rectangle.
+    pygame.draw.line(surface, CAGE_BAR_COLOR, (wall_left, wall_top), (wall_right, wall_top), 10)
+    pygame.draw.line(surface, CAGE_BAR_COLOR, (wall_left, wall_top), (wall_left, GROUND_Y), 10)
+    pygame.draw.line(surface, CAGE_BAR_COLOR, (wall_right, wall_top), (wall_right, GROUND_Y), 10)
+
+    # The sign sits straddling the top rail, like it's mounted on the cage.
+    sign_width, sign_height = 160, 48
+    sign_rect = (WIDTH / 2 - sign_width / 2, wall_top - sign_height / 2, sign_width, sign_height)
     pygame.draw.rect(surface, CAGE_SIGN_COLOR, sign_rect)
-    draw_text(surface, "ZOO", (WIDTH / 2, sign_rect[1] + 8), size=28, color=LINE_COLOR, align="center")
+    pygame.draw.rect(surface, CAGE_BAR_COLOR, sign_rect, 3)
+    draw_text(surface, "ZOO", (WIDTH / 2, sign_rect[1] + 10), size=28, color=LINE_COLOR, align="center")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
