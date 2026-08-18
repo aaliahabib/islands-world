@@ -62,6 +62,14 @@ ROCK_SPEED = {3: 55, 2: 90, 1: 140}
 ROCK_POINTS = {3: 20, 2: 50, 1: 100}   # points for shooting one
 ROCK_SPLIT_COUNT = 2                   # how many pieces a rock breaks into
 
+ENEMY_START_WAVE = 2              # the enemy ship starts showing up on this wave
+ENEMY_SPEED = 260                 # how fast it chases you (faster than your ship's SHIP_MAX_SPEED)
+ENEMY_TURN_SPEED = 150            # how quickly it turns to face you, degrees per second
+ENEMY_HITS_TO_DESTROY = 3         # how many bullets it takes to destroy it
+ENEMY_POINTS = 200                # points for destroying it
+ENEMY_SIZE = 22
+ENEMY_COLOR = (255, 40, 40)       # colour of the enemy ship
+
 FPS = 60
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -241,6 +249,46 @@ class Rock:
         return [Rock(self.x, self.y, self.size - 1) for _ in range(ROCK_SPLIT_COUNT)]
 
 
+class EnemyShip:
+    # Same outline as your ship, drawn nose-first.
+    SHAPE = Ship.SHAPE
+
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+        self.angle = 0.0
+        self.radius = ENEMY_SIZE * 0.7
+        self.hits_left = ENEMY_HITS_TO_DESTROY
+
+    def update(self, dt, target):
+        # Turn to face the ship, then fly straight at it.
+        dx, dy = target.x - self.x, target.y - self.y
+        desired_angle = math.degrees(math.atan2(dy, dx))
+        diff = (desired_angle - self.angle + 180) % 360 - 180
+        max_turn = ENEMY_TURN_SPEED * dt
+        self.angle += max(-max_turn, min(max_turn, diff))
+
+        radians = math.radians(self.angle)
+        self.x, self.y = wrap(
+            self.x + math.cos(radians) * ENEMY_SPEED * dt,
+            self.y + math.sin(radians) * ENEMY_SPEED * dt,
+        )
+
+    def points(self, shape, scale=ENEMY_SIZE):
+        radians = math.radians(self.angle)
+        cos_a, sin_a = math.cos(radians), math.sin(radians)
+        return [
+            (
+                self.x + (px * cos_a - py * sin_a) * scale,
+                self.y + (px * sin_a + py * cos_a) * scale,
+            )
+            for px, py in shape
+        ]
+
+    def draw(self, surface):
+        draw_shape(surface, self.points(self.SHAPE), color=ENEMY_COLOR)
+
+
 class Debris:
     """A little burst of lines when something is destroyed."""
 
@@ -285,12 +333,14 @@ class Game:
         self.ship = Ship()
         self.bullets = []
         self.rocks = []
+        self.enemy = None
         self.debris = []
         self.score = 0
         self.lives = STARTING_LIVES
         self.wave = 0
         self.time_alive = 0.0
         self.fire_timer = 0.0
+        self.banner_timer = 0.0
         self.over = False
         reset_score()
         submit_score(0)
@@ -298,15 +348,28 @@ class Game:
 
     def next_wave(self):
         self.wave += 1
-        count = STARTING_ROCKS + self.wave - 1
-        for _ in range(count):
-            # Spawn away from the middle so rocks don't appear on top of the ship.
+        self.lives = STARTING_LIVES
+
+        if self.wave == ENEMY_START_WAVE:
+            self.banner_timer = 2.0    # flash "BOSS" briefly
+        else:
+            count = STARTING_ROCKS + self.wave - 1
+            for _ in range(count):
+                # Spawn away from the middle so rocks don't appear on top of the ship.
+                while True:
+                    x = random.uniform(0, WIDTH)
+                    y = random.uniform(0, HEIGHT)
+                    if math.hypot(x - WIDTH / 2, y - HEIGHT / 2) > 180:
+                        break
+                self.rocks.append(Rock(x, y, 3))
+
+        if self.wave >= ENEMY_START_WAVE:
             while True:
                 x = random.uniform(0, WIDTH)
                 y = random.uniform(0, HEIGHT)
                 if math.hypot(x - WIDTH / 2, y - HEIGHT / 2) > 180:
                     break
-            self.rocks.append(Rock(x, y, 3))
+            self.enemy = EnemyShip(x, y)
 
     def shoot(self):
         if self.fire_timer > 0 or len(self.bullets) >= MAX_BULLETS:
@@ -348,6 +411,9 @@ class Game:
         for rock in self.rocks:
             rock.update(dt)
 
+        if self.enemy:
+            self.enemy.update(dt, self.ship)
+
         for burst in self.debris:
             burst.update(dt)
         self.debris = [d for d in self.debris if d.life > 0]
@@ -376,7 +442,28 @@ class Game:
                     self.lose_a_life()
                     break
 
-        if not self.rocks:
+        # Bullets vs enemy.
+        if self.enemy:
+            hit_by = None
+            for bullet in self.bullets:
+                if collides(self.enemy, bullet):
+                    hit_by = bullet
+                    break
+            if hit_by is not None:
+                self.bullets.remove(hit_by)
+                self.enemy.hits_left -= 1
+                if self.enemy.hits_left <= 0:
+                    self.add_score(ENEMY_POINTS)
+                    self.enemy = None
+
+        # Enemy ship vs ship.
+        if self.ship.invuln <= 0 and self.enemy and collides(self.enemy, self.ship):
+            self.lose_a_life()
+
+        self.banner_timer = max(0.0, self.banner_timer - dt)
+
+        boss_wave_clear = self.wave != ENEMY_START_WAVE or self.enemy is None
+        if not self.rocks and boss_wave_clear:
             self.next_wave()
 
     def draw(self, surface):
@@ -384,6 +471,8 @@ class Game:
 
         for rock in self.rocks:
             rock.draw(surface)
+        if self.enemy:
+            self.enemy.draw(surface)
         for bullet in self.bullets:
             bullet.draw(surface)
         for burst in self.debris:
@@ -392,6 +481,9 @@ class Game:
             self.ship.draw(surface, self.time_alive)
 
         self.draw_hud(surface)
+
+        if self.banner_timer > 0:
+            draw_text(surface, "BOSS", (WIDTH / 2, 40), size=90, color=ENEMY_COLOR, align="center")
 
         if self.over:
             draw_text(surface, "GAME OVER", (WIDTH / 2, HEIGHT / 2 - 70), size=64, align="center")
@@ -414,6 +506,17 @@ class Game:
             draw_shape(surface, points, width=2)
 
         draw_text(surface, f"WAVE {self.wave}", (WIDTH - 28, 26), size=24, align="right")
+
+        # Boss's remaining hits, drawn as little red ships on the opposite side.
+        if self.enemy:
+            for i in range(self.enemy.hits_left):
+                x = WIDTH - 34 - i * 30
+                y = 90
+                points = [
+                    (x + (px * 0.0 - py * -1.0) * 11, y + (px * -1.0 + py * 0.0) * 11)
+                    for px, py in Ship.SHAPE
+                ]
+                draw_shape(surface, points, color=ENEMY_COLOR, width=2)
 
 
 async def main():
