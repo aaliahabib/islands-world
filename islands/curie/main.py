@@ -22,6 +22,7 @@ Two rules that keep your island working inside Islands World:
 """
 
 import asyncio
+import random
 
 import pygame
 
@@ -68,7 +69,10 @@ CLOUD_COLOR = (255, 255, 255)
 GRASS_DARK = (54, 122, 54)
 
 PLAYER_MAX_HEALTH = 100
-ROBOT_MAX_HEALTH = 100
+
+PHASE_COUNT = 5
+ROBOT_MAX_HEALTH_BY_PHASE = [100, 120, 145, 175, 220]
+SCORE_MULTIPLIER_BY_PHASE = [1.0, 1.3, 1.6, 2.0, 2.5]
 
 MOVE_SPEED = 230
 JUMP_SPEED = 560
@@ -79,9 +83,6 @@ KICK_DAMAGE = 10
 ATTACK_RANGE = 82
 ATTACK_ACTIVE_TIME = 0.12
 ATTACK_COOLDOWN = 0.35
-
-ROBOT_MOVE_SPEED = 170
-ROBOT_ATTACK_COOLDOWN = 1.1
 
 SPECIAL_MAX = 100
 SPECIAL_PER_SECOND = 3
@@ -129,9 +130,65 @@ def draw_pixel_sprite(surface, blocks, palette, cx, top_y, facing, total_w_units
         pygame.draw.rect(surface, palette[key], (x, y, gw * PIXEL_SIZE, gh * PIXEL_SIZE * v_scale))
 
 
-def draw_cloud(surface, x, y):
+def draw_cloud(surface, x, y, color=None):
     for dx, dy, r in [(-24, 4, 20), (0, -6, 26), (26, 4, 20), (50, 6, 16)]:
-        pygame.draw.circle(surface, CLOUD_COLOR, (x + dx, y + dy), r)
+        pygame.draw.circle(surface, color or CLOUD_COLOR, (x + dx, y + dy), r)
+
+
+def draw_flame(surface, base_x, base_y, scale=1.0):
+    """A little flame standing on its base point, tip pointing up."""
+    pygame.draw.polygon(surface, (200, 60, 20), [
+        (base_x, base_y - 26 * scale), (base_x - 10 * scale, base_y), (base_x + 10 * scale, base_y),
+    ])
+    pygame.draw.polygon(surface, (240, 150, 40), [
+        (base_x, base_y - 14 * scale), (base_x - 5 * scale, base_y), (base_x + 5 * scale, base_y),
+    ])
+
+
+STAR_SPOTS = [(60, 40), (140, 90), (300, 30), (500, 70), (650, 40), (800, 90), (380, 120), (200, 150), (720, 140)]
+NIGHT_FIRE_SPOTS = [220, 520, 760]
+HELL_FIRE_SPOTS = [150, 320, 480, 640, 800]
+
+
+def draw_background(surface, phase):
+    """Each phase is a later hour of the same fight — day, evening, night,
+    night with fire creeping in, then the inferno."""
+    if phase == 1:
+        surface.fill(SKY_COLOR)
+        pygame.draw.circle(surface, SUN_COLOR, (WIDTH - 120, 100), 46)
+        for cx, cy in [(150, 90), (420, 60), (650, 110)]:
+            draw_cloud(surface, cx, cy)
+        pygame.draw.rect(surface, GROUND_COLOR, (0, GROUND_Y + 10, WIDTH, HEIGHT - GROUND_Y))
+        for gx in range(10, WIDTH, 16):
+            pygame.draw.line(surface, GRASS_DARK, (gx, GROUND_Y + 10), (gx - 4, GROUND_Y), 2)
+    elif phase == 2:
+        surface.fill((255, 170, 95))
+        pygame.draw.circle(surface, (255, 130, 60), (WIDTH - 150, 190), 56)
+        for cx, cy in [(150, 90), (420, 60), (650, 110)]:
+            draw_cloud(surface, cx, cy, (255, 205, 160))
+        pygame.draw.rect(surface, (120, 108, 58), (0, GROUND_Y + 10, WIDTH, HEIGHT - GROUND_Y))
+        for gx in range(10, WIDTH, 16):
+            pygame.draw.line(surface, (80, 70, 35), (gx, GROUND_Y + 10), (gx - 4, GROUND_Y), 2)
+    elif phase == 3:
+        surface.fill((16, 16, 42))
+        pygame.draw.circle(surface, (225, 225, 210), (WIDTH - 130, 90), 34)
+        for sx, sy in STAR_SPOTS:
+            pygame.draw.circle(surface, (230, 230, 230), (sx, sy), 2)
+        pygame.draw.rect(surface, (35, 48, 38), (0, GROUND_Y + 10, WIDTH, HEIGHT - GROUND_Y))
+    elif phase == 4:
+        surface.fill((34, 16, 24))
+        pygame.draw.circle(surface, (200, 190, 180), (WIDTH - 130, 90), 30)
+        for sx, sy in STAR_SPOTS:
+            pygame.draw.circle(surface, (210, 190, 190), (sx, sy), 2)
+        pygame.draw.rect(surface, (44, 32, 28), (0, GROUND_Y + 10, WIDTH, HEIGHT - GROUND_Y))
+        for fx in NIGHT_FIRE_SPOTS:
+            draw_flame(surface, fx, GROUND_Y + 10, scale=0.8)
+    else:
+        surface.fill((120, 20, 20))
+        pygame.draw.rect(surface, (70, 10, 10), (0, GROUND_Y - 90, WIDTH, 90))
+        pygame.draw.rect(surface, (18, 12, 12), (0, GROUND_Y + 10, WIDTH, HEIGHT - GROUND_Y))
+        for fx in HELL_FIRE_SPOTS:
+            draw_flame(surface, fx, GROUND_Y + 10, scale=1.1)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -225,6 +282,11 @@ class Player:
 
         self.special = min(SPECIAL_MAX, self.special + SPECIAL_PER_SECOND * dt)
 
+    def reset_for_new_phase(self):
+        """New phase: your health is fully restored, but your special bar
+        keeps whatever charge it already had."""
+        self.health = PLAYER_MAX_HEALTH
+
     def try_attack(self):
         if self.attack_cooldown <= 0 and self.stun_timer <= 0:
             self.attack_type = "kick" if self.crouching else "punch"
@@ -248,44 +310,132 @@ class Player:
 ROBOT_UNITS_W = 14
 ROBOT_UNITS_H = 20
 
-ROBOT_PALETTE = {
-    "skin": ROBOT_SKIN,
+ROBOT_PALETTE_BASE = {
+    "head": ROBOT_SKIN,
+    "torso_peek": ROBOT_SKIN,
+    "arm_l": ROBOT_SKIN,
+    "arm_r": ROBOT_SKIN,
     "clothing": ROBOT_CLOTHING,
     "pants": ROBOT_PANTS,
-    "boots": ROBOT_BOOTS,
+    "leg_l": ROBOT_PANTS,
+    "leg_r": ROBOT_PANTS,
+    "boot_l": ROBOT_BOOTS,
+    "boot_r": ROBOT_BOOTS,
 }
 
+# Which body parts have lost their skin and show bare metal, one phase's
+# worth added on top of the last — by phase 5 it's a walking skeleton.
+DEGRADE_PARTS_BY_PHASE = [
+    [],
+    ["arm_r"],
+    ["arm_r", "arm_l"],
+    ["arm_r", "arm_l", "leg_r"],
+    ["arm_r", "arm_l", "leg_r", "leg_l", "head", "torso_peek"],
+]
 
-def build_robot_blocks(attacking):
-    front_arm_w = 8 if attacking else 2
+# Five phases, five fighting styles. `low_kick` styles can be dodged by
+# jumping; `guard_chance` styles mostly block unless you catch them right
+# after their own attack (recovery_window); `dash` styles rush in fast and
+# are wide open for a moment right after. `symbol_color` is a small, easy to
+# miss marking that changes with the style — the only outward clue.
+STYLES = [
+    {
+        "name": "boxeador",
+        "move_speed": 170,
+        "attack_type": "punch",
+        "attack_cooldown": 1.0,
+        "damage": PUNCH_DAMAGE,
+        "low_kick": False,
+        "guard_chance": 0.0,
+        "dash": False,
+        "symbol_color": (230, 200, 40),
+    },
+    {
+        "name": "patadas bajas",
+        "move_speed": 190,
+        "attack_type": "kick",
+        "attack_cooldown": 1.15,
+        "damage": KICK_DAMAGE + 4,
+        "low_kick": True,
+        "guard_chance": 0.0,
+        "dash": False,
+        "symbol_color": (230, 130, 40),
+    },
+    {
+        "name": "guardia",
+        "move_speed": 150,
+        "attack_type": "punch",
+        "attack_cooldown": 1.3,
+        "damage": PUNCH_DAMAGE + 6,
+        "low_kick": False,
+        "guard_chance": 0.65,
+        "dash": False,
+        "symbol_color": (90, 170, 230),
+    },
+    {
+        "name": "embestida",
+        "move_speed": 150,
+        "attack_type": "punch",
+        "attack_cooldown": 1.6,
+        "damage": PUNCH_DAMAGE + 8,
+        "low_kick": False,
+        "guard_chance": 0.0,
+        "dash": True,
+        "symbol_color": (220, 60, 60),
+    },
+    {
+        "name": "mixto",
+        "move_speed": 210,
+        "attack_type": "mixed",
+        "attack_cooldown": 0.8,
+        "damage": KICK_DAMAGE + 10,
+        "low_kick": True,
+        "guard_chance": 0.3,
+        "dash": True,
+        "symbol_color": (200, 90, 220),
+    },
+]
+
+
+def build_robot_blocks(attacking, attack_type):
+    attacking_punch = attacking and attack_type == "punch"
+    attacking_kick = attacking and attack_type == "kick"
+    front_arm_w = 8 if attacking_punch else 2
+    front_leg_w = 9 if attacking_kick else 3
     return [
-        (4, 0, 6, 4, "skin"),
-        (5, 4, 4, 1, "skin"),
+        (4, 0, 6, 4, "head"),
+        (5, 4, 4, 1, "head"),
         (2, 6, 10, 5, "clothing"),
-        (3, 5, 8, 1, "skin"),
-        (1, 6, 2, 5, "skin"),
-        (11, 6, front_arm_w, 5, "skin"),
+        (3, 5, 8, 1, "torso_peek"),
+        (1, 6, 2, 5, "arm_l"),
+        (11, 6, front_arm_w, 5, "arm_r"),
         (3, 11, 8, 2, "pants"),
-        (3, 13, 3, 5, "pants"),
-        (8, 13, 3, 5, "pants"),
-        (3, 18, 3, 2, "boots"),
-        (8, 18, 3, 2, "boots"),
+        (3, 13, 3, 5, "leg_l"),
+        (8, 13, front_leg_w, 5, "leg_r"),
+        (3, 18, 3, 2, "boot_l"),
+        (8, 18, 3, 2, "boot_r"),
     ]
 
 
 class Robot:
-    def __init__(self):
+    def __init__(self, phase):
+        self.phase = phase
+        self.style = STYLES[phase - 1]
         self.reset()
 
     def reset(self):
         self.x = WIDTH * 0.75
         self.facing = -1
-        self.health = ROBOT_MAX_HEALTH
+        self.max_health = ROBOT_MAX_HEALTH_BY_PHASE[self.phase - 1]
+        self.health = self.max_health
         self.attack_timer = 0.0
         self.attack_cooldown = 1.0
         self.attack_type = "punch"
         self.attack_registered = False
         self.stun_timer = 0.0
+        self.dash_cooldown = 0.0
+        self.recovery_timer = 0.0
+        self.attack_cycle = 0
 
     def update(self, dt, player_x):
         self.facing = 1 if player_x >= self.x else -1
@@ -294,33 +444,64 @@ class Robot:
             self.stun_timer = max(0.0, self.stun_timer - dt)
         else:
             distance = abs(player_x - self.x)
+            dashing = self.style["dash"] and distance > ATTACK_RANGE * 1.3 and self.dash_cooldown <= 0
+            speed = self.style["move_speed"] * (3.0 if dashing else 1.0)
             if distance > ATTACK_RANGE * 0.85:
-                self.x += self.facing * ROBOT_MOVE_SPEED * dt
+                self.x += self.facing * speed * dt
                 self.x = max(ARENA_LEFT, min(ARENA_RIGHT, self.x))
-            self.attack_cooldown = max(0.0, self.attack_cooldown - dt)
-            if distance <= ATTACK_RANGE and self.attack_cooldown <= 0:
-                self.attack_type = "punch"
-                self.attack_timer = ATTACK_ACTIVE_TIME
-                self.attack_cooldown = ROBOT_ATTACK_COOLDOWN
-                self.attack_registered = False
 
+            self.attack_cooldown = max(0.0, self.attack_cooldown - dt)
+            distance = abs(player_x - self.x)
+            if distance <= ATTACK_RANGE and self.attack_cooldown <= 0:
+                self._start_attack()
+
+        self.dash_cooldown = max(0.0, self.dash_cooldown - dt)
+        self.recovery_timer = max(0.0, self.recovery_timer - dt)
         if self.attack_timer > 0:
             self.attack_timer -= dt
             if self.attack_timer <= 0:
                 self.attack_registered = False
 
+    def _start_attack(self):
+        attack_type = self.style["attack_type"]
+        if attack_type == "mixed":
+            attack_type = "kick" if self.attack_cycle % 2 == 0 else "punch"
+            self.attack_cycle += 1
+        self.attack_type = attack_type
+        self.attack_timer = ATTACK_ACTIVE_TIME
+        self.attack_cooldown = self.style["attack_cooldown"]
+        self.attack_registered = False
+        if self.style["dash"]:
+            self.dash_cooldown = 0.5
+            self.recovery_timer = 0.6   # wide open right after a dash-attack
+
     def draw(self, surface):
         top_y = GROUND_Y - ROBOT_UNITS_H * PIXEL_SIZE
-        blocks = build_robot_blocks(self.attack_timer > 0)
-        palette = ROBOT_PALETTE
+        blocks = build_robot_blocks(self.attack_timer > 0, self.attack_type)
+
+        palette = dict(ROBOT_PALETTE_BASE)
+        for key in DEGRADE_PARTS_BY_PHASE[self.phase - 1]:
+            palette[key] = ROBOT_METAL
         flash = self.stun_timer > 0 and int(self.stun_timer * 10) % 2 == 0
         if flash:
-            palette = dict(ROBOT_PALETTE, skin=ROBOT_METAL)
+            palette = {key: ROBOT_METAL for key in palette}
+
         draw_pixel_sprite(surface, blocks, palette, self.x, top_y, self.facing, ROBOT_UNITS_W)
 
         eye_x = self.x + self.facing * 8
         eye_y = top_y + PIXEL_SIZE * 2
         pygame.draw.circle(surface, ROBOT_EYE, (eye_x, eye_y), 5)
+
+        # The one clue to its fighting style — small enough that you have to
+        # be paying attention to notice it changed.
+        symbol_x = self.x - self.facing * 10
+        symbol_y = top_y + PIXEL_SIZE * 7
+        pygame.draw.rect(surface, self.style["symbol_color"], (symbol_x - 3, symbol_y - 3, 6, 6))
+
+        if self.phase == PHASE_COUNT:
+            flicker = (pygame.time.get_ticks() // 150) % 2
+            for dx in (-14, 0, 16):
+                draw_flame(surface, self.x + dx, top_y + PIXEL_SIZE * (7 + flicker), scale=0.55)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -333,15 +514,17 @@ class Game:
         self.start_new_game()
 
     def start_new_game(self):
+        self.phase = 1
         self.player = Player()
-        self.robot = Robot()
+        self.robot = Robot(self.phase)
         self.score = 0
         self.over = False
         reset_score()
         submit_score(0)
 
     def add_score(self, points):
-        self.score += points
+        multiplier = SCORE_MULTIPLIER_BY_PHASE[self.phase - 1]
+        self.score += round(points * multiplier)
         submit_score(self.score)
 
     def update(self, dt, keys):
@@ -353,22 +536,49 @@ class Game:
         self._resolve_attack(self.robot, self.player, scores=False)
 
         if self.robot.health <= 0:
-            self.add_score(SCORE_PER_ROBOT_DOWN)
-            self.robot.reset()
+            self._advance_phase()
 
         if self.player.health <= 0:
             self.over = True
             game_over(self.score)
 
+    def _advance_phase(self):
+        self.add_score(SCORE_PER_ROBOT_DOWN)
+        self.phase = min(PHASE_COUNT, self.phase + 1)
+        self.player.reset_for_new_phase()
+        self.robot = Robot(self.phase)
+
     def _resolve_attack(self, attacker, defender, scores):
-        if attacker.attack_timer > 0 and not attacker.attack_registered:
-            if abs(attacker.x - defender.x) <= ATTACK_RANGE:
-                damage = KICK_DAMAGE if attacker.attack_type == "kick" else PUNCH_DAMAGE
-                defender.health = max(0, defender.health - damage)
-                attacker.attack_registered = True
-                if scores:
-                    self.add_score(SCORE_PER_HIT)
-                    self.player.special = min(SPECIAL_MAX, self.player.special + SPECIAL_PER_HIT)
+        if not (attacker.attack_timer > 0 and not attacker.attack_registered):
+            return
+        if abs(attacker.x - defender.x) > ATTACK_RANGE:
+            return
+        attacker.attack_registered = True
+
+        robot_style = attacker.style if attacker is self.robot else None
+        if robot_style and robot_style["low_kick"] and attacker.attack_type == "kick" and defender.air_height > 0:
+            return   # dodged by jumping over the low kick
+
+        if robot_style:
+            damage = robot_style["damage"]
+        else:
+            damage = KICK_DAMAGE if attacker.attack_type == "kick" else PUNCH_DAMAGE
+
+        if defender is self.robot:
+            damage = self._through_guard(damage)
+
+        defender.health = max(0, defender.health - damage)
+        if scores:
+            self.add_score(SCORE_PER_HIT)
+            self.player.special = min(SPECIAL_MAX, self.player.special + SPECIAL_PER_HIT)
+
+    def _through_guard(self, damage):
+        robot = self.robot
+        if robot.recovery_timer > 0:
+            return round(damage * 1.5)   # caught it right after its own attack
+        if robot.style["guard_chance"] > 0 and random.random() < robot.style["guard_chance"]:
+            return 1   # blocked — just a chip of damage gets through
+        return damage
 
     def use_special(self, kind):
         if self.over or not self.player.try_special():
@@ -380,23 +590,17 @@ class Game:
             self.add_score(SCORE_PER_SPECIAL)
 
     def draw(self, surface):
-        surface.fill(SKY_COLOR)
-        pygame.draw.circle(surface, SUN_COLOR, (WIDTH - 120, 100), 46)
-        for cx, cy in [(150, 90), (420, 60), (650, 110)]:
-            draw_cloud(surface, cx, cy)
-
-        pygame.draw.rect(surface, GROUND_COLOR, (0, GROUND_Y + 10, WIDTH, HEIGHT - GROUND_Y))
-        for gx in range(10, WIDTH, 16):
-            pygame.draw.line(surface, GRASS_DARK, (gx, GROUND_Y + 10), (gx - 4, GROUND_Y), 2)
+        draw_background(surface, self.phase)
 
         self.robot.draw(surface)
         self.player.draw(surface)
 
         draw_bar(surface, 30, 24, 300, 22, self.player.health / PLAYER_MAX_HEALTH, (60, 200, 90))
         draw_bar(surface, 30, 52, 160, 12, self.player.special / SPECIAL_MAX, (80, 160, 230))
-        draw_bar(surface, WIDTH - 330, 24, 300, 22, self.robot.health / ROBOT_MAX_HEALTH, (210, 60, 60))
+        draw_bar(surface, WIDTH - 330, 24, 300, 22, self.robot.health / self.robot.max_health, (210, 60, 60))
 
-        draw_text(surface, f"SCORE {self.score}", (WIDTH / 2, 20), size=28, align="center")
+        draw_text(surface, f"FASE {self.phase}/{PHASE_COUNT}", (WIDTH / 2, 20), size=26, align="center")
+        draw_text(surface, f"SCORE {self.score}", (WIDTH / 2, 54), size=18, align="center")
         draw_text(surface, "Z: ATURDIR   X: DAÑO", (WIDTH - 20, HEIGHT - 30), size=16, align="right")
 
         if self.over:
